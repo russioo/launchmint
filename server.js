@@ -23,6 +23,10 @@ const PORT = process.env.PORT || 3000;
 const RPC_URL = process.env.RPC_URL || 'https://api.mainnet-beta.solana.com';
 const connection = new Connection(RPC_URL, 'confirmed');
 
+// API Keys (server-side - users don't need their own)
+const PUMPPORTAL_API_KEY = process.env.PUMPPORTAL_API_KEY || '';
+const BAGS_API_KEY = process.env.BAGS_API_KEY || '';
+
 // Store launched tokens (in memory - use database in production)
 const launchedTokens = [];
 const wallets = new Map(); // Store generated wallets for claims
@@ -892,8 +896,7 @@ app.get('/', (req, res) => {
     <span class="p">platform:</span> <span class="s">'pumpfun'</span>,
     <span class="p">name:</span> <span class="s">'MyToken'</span>,
     <span class="p">symbol:</span> <span class="s">'MTK'</span>,
-    <span class="p">image:</span> <span class="s">'https://example.com/logo.png'</span>,
-    <span class="p">apiKey:</span> <span class="s">'your-pumpportal-key'</span>
+    <span class="p">image:</span> <span class="s">'https://example.com/logo.png'</span>
   })
 });
 
@@ -1593,9 +1596,11 @@ Launch tokens on Solana. Works with PumpFun, USD1/Bonk, and Bags.fm.
 
 ---
 
-## API Keys Required
+## API Keys (Optional)
 
-Each platform requires its own API key:
+**The server has built-in API keys** - you don't need to provide your own!
+
+If you want to use your own keys:
 
 ### PumpFun & Bonk/USD1
 Get API key from: https://pumpportal.fun/trading-api/setup/
@@ -1622,7 +1627,6 @@ Content-Type: application/json
   "description": "My awesome token",
   "image": "https://example.com/token.png",
   "creatorWallet": "YourSolanaWalletAddress",
-  "apiKey": "your-platform-api-key",
   "privateKey": "your-base58-private-key",
   "twitter": "https://twitter.com/mytoken",
   "telegram": "https://t.me/mytoken",
@@ -1641,7 +1645,7 @@ Content-Type: application/json
 | \`description\` | No | Token description |
 | \`image\` | Yes | URL to token image (PNG/JPG) |
 | \`creatorWallet\` | Yes | Solana wallet to receive fees |
-| \`apiKey\` | Yes | Platform API key |
+| \`apiKey\` | No | Platform API key (optional - server has default keys) |
 | \`privateKey\` | Yes* | Base58 private key for signing (*not needed for PumpPortal Lightning API) |
 | \`twitter\` | No | Twitter URL |
 | \`telegram\` | No | Telegram URL |
@@ -1678,7 +1682,6 @@ const response = await fetch('${baseUrl}/api/tokens/create', {
     description: 'The best memecoin ever',
     image: 'https://example.com/meme.png',
     creatorWallet: 'YourWallet...',
-    apiKey: 'your-pumpportal-api-key',
     initialBuyAmount: 0.5  // Dev buy 0.5 SOL
   })
 });
@@ -1697,7 +1700,6 @@ const response = await fetch('${baseUrl}/api/tokens/create', {
     description: 'USD1 paired token',
     image: 'https://example.com/stable.png',
     creatorWallet: 'YourWallet...',
-    apiKey: 'your-pumpportal-api-key',
     initialBuyAmount: 1  // Dev buy 1 SOL worth
   })
 });
@@ -1716,7 +1718,6 @@ const response = await fetch('${baseUrl}/api/tokens/create', {
     description: 'Token with fee sharing',
     image: 'https://example.com/collab.png',
     creatorWallet: 'YourWallet...',
-    apiKey: 'your-bags-api-key',
     privateKey: 'your-base58-private-key',
     initialBuyAmount: 0.01,
     feeClaimers: [
@@ -1777,8 +1778,7 @@ curl -X POST ${baseUrl}/api/tokens/create \\
     "symbol": "TEST",
     "description": "A test token",
     "image": "https://example.com/test.png",
-    "creatorWallet": "YourWallet...",
-    "apiKey": "your-api-key"
+    "creatorWallet": "YourWallet..."
   }'
 \`\`\`
 
@@ -1795,8 +1795,7 @@ response = requests.post('${baseUrl}/api/tokens/create', json={
     'symbol': 'PYTH',
     'description': 'Launched from Python',
     'image': 'https://example.com/python.png',
-    'creatorWallet': 'YourWallet...',
-    'apiKey': 'your-api-key'
+    'creatorWallet': 'YourWallet...'
 })
 
 data = response.json()
@@ -1840,9 +1839,6 @@ app.post('/api/tokens/create', async (req, res) => {
     if (!image) {
       return res.status(400).json({ success: false, error: 'image URL required' });
     }
-    if (!apiKey) {
-      return res.status(400).json({ success: false, error: 'apiKey required for platform' });
-    }
 
     // Normalize platform
     const normalizedPlatform = platform.toLowerCase() === 'pump' ? 'pumpfun' : 
@@ -1854,22 +1850,36 @@ app.post('/api/tokens/create', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid platform. Use: pumpfun, bonk, or bags' });
     }
 
+    // Use server API keys if not provided
+    let resolvedApiKey = apiKey;
+    if (!resolvedApiKey) {
+      if (normalizedPlatform === 'pumpfun' || normalizedPlatform === 'bonk') {
+        resolvedApiKey = PUMPPORTAL_API_KEY;
+      } else if (normalizedPlatform === 'bags') {
+        resolvedApiKey = BAGS_API_KEY;
+      }
+    }
+
+    if (!resolvedApiKey) {
+      return res.status(400).json({ success: false, error: 'No API key available. Contact admin or provide your own apiKey.' });
+    }
+
     let result;
 
     if (normalizedPlatform === 'pumpfun') {
       result = await launchOnPumpFun({
         name, symbol, description, image, twitter, telegram, website,
-        creatorWallet, apiKey, privateKey, initialBuyAmount
+        creatorWallet, apiKey: resolvedApiKey, privateKey, initialBuyAmount
       });
     } else if (normalizedPlatform === 'bonk') {
       result = await launchOnBonk({
         name, symbol, description, image, twitter, telegram, website,
-        creatorWallet, apiKey, privateKey, initialBuyAmount
+        creatorWallet, apiKey: resolvedApiKey, privateKey, initialBuyAmount
       });
     } else if (normalizedPlatform === 'bags') {
       result = await launchOnBags({
         name, symbol, description, image, twitter, telegram, website,
-        creatorWallet, apiKey, privateKey, initialBuyAmount, feeClaimers
+        creatorWallet, apiKey: resolvedApiKey, privateKey, initialBuyAmount, feeClaimers
       });
     }
 
