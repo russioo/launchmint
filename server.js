@@ -11,6 +11,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL, VersionedTransaction, Transaction, SystemProgram } = require('@solana/web3.js');
+const { PumpSdk, getBuyTokenAmountFromSolAmount } = require('@pump-fun/pump-sdk');
+const BN = require('bn.js');
 const bs58 = require('bs58');
 const FormData = require('form-data');
 
@@ -23,9 +25,10 @@ const PORT = process.env.PORT || 3000;
 const RPC_URL = process.env.RPC_URL || 'https://api.mainnet-beta.solana.com';
 const connection = new Connection(RPC_URL, 'confirmed');
 
-// API Keys (server-side - users don't need their own)
-const PUMPPORTAL_API_KEY = process.env.PUMPPORTAL_API_KEY || '';
-const BAGS_API_KEY = process.env.BAGS_API_KEY || '';
+// Initialize Pump SDK
+const pumpSdk = new PumpSdk(connection);
+
+// Note: Users must provide their own Bags API key for bags.fm launches
 
 // Store launched tokens (in memory - use database in production)
 const launchedTokens = [];
@@ -1588,25 +1591,26 @@ Launch tokens on Solana. Works with PumpFun, USD1/Bonk, and Bags.fm.
 
 ## Supported Platforms
 
-| Platform | API Key | Quote | Best For |
-|----------|---------|-------|----------|
-| \`pumpfun\` | PumpPortal | SOL | Quick memecoin launches |
-| \`bonk\` | PumpPortal | USD1 | Stable pricing |
-| \`bags\` | Bags.fm | SOL | Fee sharing with collaborators |
+| Platform | API Key Required | Quote | Best For |
+|----------|------------------|-------|----------|
+| \`pumpfun\` | No (uses official SDK) | SOL | Quick memecoin launches |
+| \`bonk\` | Yes (PumpPortal) | USD1 | Stable pricing |
+| \`bags\` | Yes (Bags.fm) | SOL | Fee sharing with collaborators |
 
 ---
 
-## API Keys (Optional)
+## API Keys
 
-**The server has built-in API keys** - you don't need to provide your own!
+### PumpFun
+**No API key required!** Uses the official @pump-fun/pump-sdk.
+Just provide your wallet's private key.
 
-If you want to use your own keys:
-
-### PumpFun & Bonk/USD1
+### Bonk/USD1
 Get API key from: https://pumpportal.fun/trading-api/setup/
 
 ### Bags.fm
 Get API key from: https://dev.bags.fm
+Each user needs their own Bags API key for fee sharing to work correctly.
 
 ---
 
@@ -1645,8 +1649,8 @@ Content-Type: application/json
 | \`description\` | No | Token description |
 | \`image\` | Yes | URL to token image (PNG/JPG) |
 | \`creatorWallet\` | Yes | Solana wallet to receive fees |
-| \`apiKey\` | No | Platform API key (optional - server has default keys) |
-| \`privateKey\` | Yes* | Base58 private key for signing (*not needed for PumpPortal Lightning API) |
+| \`apiKey\` | Depends | Required for \`bonk\` (PumpPortal) and \`bags\` (Bags.fm). Not needed for \`pumpfun\`. |
+| \`privateKey\` | Yes | Base58 private key for signing transactions |
 | \`twitter\` | No | Twitter URL |
 | \`telegram\` | No | Telegram URL |
 | \`website\` | No | Website URL |
@@ -1669,7 +1673,7 @@ Content-Type: application/json
 
 ## Platform-Specific Examples
 
-### PumpFun Launch
+### PumpFun Launch (No API Key Needed!)
 
 \`\`\`javascript
 const response = await fetch('${baseUrl}/api/tokens/create', {
@@ -1682,12 +1686,13 @@ const response = await fetch('${baseUrl}/api/tokens/create', {
     description: 'The best memecoin ever',
     image: 'https://example.com/meme.png',
     creatorWallet: 'YourWallet...',
+    privateKey: 'your-base58-private-key',  // Required for signing
     initialBuyAmount: 0.5  // Dev buy 0.5 SOL
   })
 });
 \`\`\`
 
-### USD1/Bonk Launch
+### USD1/Bonk Launch (Requires PumpPortal API Key)
 
 \`\`\`javascript
 const response = await fetch('${baseUrl}/api/tokens/create', {
@@ -1700,12 +1705,14 @@ const response = await fetch('${baseUrl}/api/tokens/create', {
     description: 'USD1 paired token',
     image: 'https://example.com/stable.png',
     creatorWallet: 'YourWallet...',
+    apiKey: 'your-pumpportal-api-key',  // Get from pumpportal.fun
+    privateKey: 'your-base58-private-key',
     initialBuyAmount: 1  // Dev buy 1 SOL worth
   })
 });
 \`\`\`
 
-### Bags.fm Launch (with Fee Sharing)
+### Bags.fm Launch (Requires Your Own Bags API Key)
 
 \`\`\`javascript
 const response = await fetch('${baseUrl}/api/tokens/create', {
@@ -1718,6 +1725,7 @@ const response = await fetch('${baseUrl}/api/tokens/create', {
     description: 'Token with fee sharing',
     image: 'https://example.com/collab.png',
     creatorWallet: 'YourWallet...',
+    apiKey: 'your-bags-api-key',  // Get from dev.bags.fm
     privateKey: 'your-base58-private-key',
     initialBuyAmount: 0.01,
     feeClaimers: [
@@ -1767,7 +1775,7 @@ Common errors:
 
 ---
 
-## cURL Example
+## cURL Example (PumpFun - No API Key)
 
 \`\`\`bash
 curl -X POST ${baseUrl}/api/tokens/create \\
@@ -1778,24 +1786,28 @@ curl -X POST ${baseUrl}/api/tokens/create \\
     "symbol": "TEST",
     "description": "A test token",
     "image": "https://example.com/test.png",
-    "creatorWallet": "YourWallet..."
+    "creatorWallet": "YourWallet...",
+    "privateKey": "your-base58-private-key"
   }'
 \`\`\`
 
 ---
 
-## Python Example
+## Python Example (Bags.fm)
 
 \`\`\`python
 import requests
 
 response = requests.post('${baseUrl}/api/tokens/create', json={
-    'platform': 'pumpfun',
+    'platform': 'bags',
     'name': 'PythonToken',
     'symbol': 'PYTH',
-    'description': 'Launched from Python',
+    'description': 'Launched from Python on Bags.fm',
     'image': 'https://example.com/python.png',
-    'creatorWallet': 'YourWallet...'
+    'creatorWallet': 'YourWallet...',
+    'apiKey': 'your-bags-api-key',  # Get from dev.bags.fm
+    'privateKey': 'your-base58-private-key',
+    'initialBuyAmount': 0.01
 })
 
 data = response.json()
@@ -1850,36 +1862,44 @@ app.post('/api/tokens/create', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid platform. Use: pumpfun, bonk, or bags' });
     }
 
-    // Use server API keys if not provided
-    let resolvedApiKey = apiKey;
-    if (!resolvedApiKey) {
-      if (normalizedPlatform === 'pumpfun' || normalizedPlatform === 'bonk') {
-        resolvedApiKey = PUMPPORTAL_API_KEY;
-      } else if (normalizedPlatform === 'bags') {
-        resolvedApiKey = BAGS_API_KEY;
-      }
+    // Validate API key requirements
+    // PumpFun: No API key needed (uses official Pump SDK)
+    // Bonk/USD1: Requires PumpPortal API key
+    // Bags: Requires user's own Bags API key
+    
+    if (normalizedPlatform === 'bags' && !apiKey) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Bags API key required. Get yours at https://dev.bags.fm' 
+      });
     }
-
-    if (!resolvedApiKey) {
-      return res.status(400).json({ success: false, error: 'No API key available. Contact admin or provide your own apiKey.' });
+    
+    if (normalizedPlatform === 'bonk' && !apiKey) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'PumpPortal API key required for Bonk/USD1. Get yours at https://pumpportal.fun/trading-api/setup/' 
+      });
     }
 
     let result;
 
     if (normalizedPlatform === 'pumpfun') {
+      // PumpFun uses official Pump SDK - no API key needed
       result = await launchOnPumpFun({
         name, symbol, description, image, twitter, telegram, website,
-        creatorWallet, apiKey: resolvedApiKey, privateKey, initialBuyAmount
+        creatorWallet, privateKey, initialBuyAmount
       });
     } else if (normalizedPlatform === 'bonk') {
+      // Bonk/USD1 uses PumpPortal API
       result = await launchOnBonk({
         name, symbol, description, image, twitter, telegram, website,
-        creatorWallet, apiKey: resolvedApiKey, privateKey, initialBuyAmount
+        creatorWallet, apiKey, privateKey, initialBuyAmount
       });
     } else if (normalizedPlatform === 'bags') {
+      // Bags uses user's own Bags API key
       result = await launchOnBags({
         name, symbol, description, image, twitter, telegram, website,
-        creatorWallet, apiKey: resolvedApiKey, privateKey, initialBuyAmount, feeClaimers
+        creatorWallet, apiKey, privateKey, initialBuyAmount, feeClaimers
       });
     }
 
@@ -1973,9 +1993,13 @@ app.get('/health', (req, res) => {
 // PLATFORM LAUNCHERS
 // ============================================
 
-async function launchOnPumpFun({ name, symbol, description, image, twitter, telegram, website, creatorWallet, apiKey, privateKey, initialBuyAmount }) {
+async function launchOnPumpFun({ name, symbol, description, image, twitter, telegram, website, creatorWallet, privateKey, initialBuyAmount }) {
   try {
-    // Generate mint keypair
+    if (!privateKey) {
+      return { success: false, error: 'privateKey required for PumpFun launch' };
+    }
+
+    const keypair = Keypair.fromSecretKey(bs58.decode(privateKey));
     const mintKeypair = Keypair.generate();
     
     // Upload to IPFS
@@ -1988,38 +2012,74 @@ async function launchOnPumpFun({ name, symbol, description, image, twitter, tele
     
     console.log('IPFS URI:', ipfsResult.metadataUri);
 
-    // Create token via PumpPortal Lightning API
-    const tradeResponse = await httpsRequest(
-      'pumpportal.fun',
-      `/api/trade?api-key=${apiKey}`,
-      'POST',
-      {
-        action: 'create',
-        tokenMetadata: {
-          name,
-          symbol,
-          uri: ipfsResult.metadataUri
-        },
-        mint: bs58.encode(mintKeypair.secretKey),
-        denominatedInSol: 'true',
-        amount: initialBuyAmount || 0,
-        slippage: 10,
-        priorityFee: 0.0005,
-        pool: 'pump'
-      }
-    );
-
-    if (tradeResponse.status === 200 && tradeResponse.data.signature) {
-      return {
-        success: true,
-        tokenAddress: mintKeypair.publicKey.toBase58(),
-        txHash: tradeResponse.data.signature,
-        url: `https://pump.fun/${mintKeypair.publicKey.toBase58()}`
-      };
+    // Fetch global state from Pump SDK
+    const global = await pumpSdk.fetchGlobal();
+    
+    let instructions;
+    const solAmount = new BN(Math.floor((initialBuyAmount || 0) * LAMPORTS_PER_SOL));
+    
+    if (initialBuyAmount && initialBuyAmount > 0) {
+      // Create token with initial buy using official Pump SDK
+      console.log('Creating token with initial buy via Pump SDK...');
+      instructions = await pumpSdk.createAndBuyInstructions({
+        global,
+        mint: mintKeypair.publicKey,
+        name,
+        symbol,
+        uri: ipfsResult.metadataUri,
+        creator: keypair.publicKey,
+        user: keypair.publicKey,
+        solAmount,
+        amount: getBuyTokenAmountFromSolAmount(global, null, solAmount),
+      });
     } else {
-      return { success: false, error: tradeResponse.data.message || 'PumpPortal API error' };
+      // Create token without initial buy
+      console.log('Creating token via Pump SDK...');
+      const instruction = await pumpSdk.createInstruction({
+        mint: mintKeypair.publicKey,
+        name,
+        symbol,
+        uri: ipfsResult.metadataUri,
+        creator: keypair.publicKey,
+        user: keypair.publicKey,
+      });
+      instructions = [instruction];
     }
+
+    // Build and send transaction
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+    
+    const transaction = new Transaction();
+    transaction.recentBlockhash = blockhash;
+    transaction.feePayer = keypair.publicKey;
+    
+    for (const ix of instructions) {
+      transaction.add(ix);
+    }
+    
+    transaction.sign(keypair, mintKeypair);
+    
+    const signature = await connection.sendRawTransaction(transaction.serialize(), {
+      skipPreflight: false,
+      preflightCommitment: 'confirmed'
+    });
+    
+    await connection.confirmTransaction({
+      signature,
+      blockhash,
+      lastValidBlockHeight
+    }, 'confirmed');
+
+    console.log('Token created successfully:', mintKeypair.publicKey.toBase58());
+
+    return {
+      success: true,
+      tokenAddress: mintKeypair.publicKey.toBase58(),
+      txHash: signature,
+      url: `https://pump.fun/${mintKeypair.publicKey.toBase58()}`
+    };
   } catch (error) {
+    console.error('PumpFun launch error:', error);
     return { success: false, error: error.message };
   }
 }
