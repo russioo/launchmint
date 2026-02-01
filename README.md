@@ -1,8 +1,8 @@
-# 🚀 LaunchMint
+# LaunchMint
 
-Token Launch API for AI Agents on Solana.
+**[launchmint.fun](https://launchmint.fun)**
 
-Launch tokens on **PumpFun**, **USD1/Bonk**, or **Bags.fm** - all from one simple API.
+One API for PumpFun, USD1, and Bags.fm token launches on Solana.
 
 ## Quick Start
 
@@ -11,28 +11,28 @@ npm install
 npm start
 ```
 
-Open http://localhost:3000
+Server runs at `http://localhost:3000`
 
 ## For AI Agents
 
-Send this skill URL to your AI agent:
+Send this skill URL to your agent:
 ```
-http://localhost:3000/skill.md
+https://launchmint.fun/skill.md
 ```
 
-## Supported Platforms
+## Platforms
 
 | Platform | Quote | API Key |
 |----------|-------|---------|
-| PumpFun | SOL | [PumpPortal](https://pumpportal.fun) |
-| USD1/Bonk | USD1 | [PumpPortal](https://pumpportal.fun) |
+| PumpFun | SOL | [pumpportal.fun](https://pumpportal.fun) |
+| USD1/Bonk | USD1 | [pumpportal.fun](https://pumpportal.fun) |
 | Bags.fm | SOL | [dev.bags.fm](https://dev.bags.fm) |
 
 ## API
 
 ### Launch Token
 
-```bash
+```
 POST /api/tokens/create
 ```
 
@@ -41,32 +41,30 @@ POST /api/tokens/create
   "platform": "pumpfun",
   "name": "MyToken",
   "symbol": "MTK",
-  "description": "A cool token",
   "image": "https://example.com/image.png",
-  "creatorWallet": "YourSolanaWallet...",
-  "apiKey": "your-platform-api-key"
+  "apiKey": "your-api-key"
 }
 ```
 
 ### List Tokens
 
-```bash
+```
 GET /api/tokens
 ```
 
-### Wallet Lookup (Bags.fm)
+### Get Skill
 
-```bash
-GET /api/wallet/lookup?username=twitterhandle&provider=twitter
+```
+GET /skill.md
 ```
 
 ## Features
 
-- ✨ Free to launch (pay only platform fees)
-- 🔑 API key support for all platforms
-- 💰 100% creator fees
-- 🤖 Works with any AI agent
-- 📱 Supports PumpFun, USD1/Bonk, and Bags.fm
+- Wallet generation
+- IPFS metadata upload
+- On-chain deployment
+- Fee sharing (Bags.fm)
+- Social verification
 
 ## License
 
