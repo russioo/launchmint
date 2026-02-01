@@ -141,6 +141,30 @@ async function uploadToBonkIPFS(imageUrl, name, symbol, description, website) {
 }
 
 // ============================================
+// FAVICON
+// ============================================
+app.get('/favicon.svg', (req, res) => {
+  res.type('image/svg+xml').send(`
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ff5c00"/>
+      <stop offset="100%" style="stop-color:#ff8c4c"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#0a0a0a"/>
+  <path d="M16 44V20h6v24h-6z" fill="url(#grad)"/>
+  <path d="M26 44V20h6l8 14V20h6v24h-6l-8-14v14h-6z" fill="#e8e8e8"/>
+  <circle cx="52" cy="16" r="6" fill="url(#grad)"/>
+</svg>
+  `);
+});
+
+app.get('/favicon.ico', (req, res) => {
+  res.redirect('/favicon.svg');
+});
+
+// ============================================
 // LANDING PAGE
 // ============================================
 app.get('/', (req, res) => {
@@ -153,6 +177,7 @@ app.get('/', (req, res) => {
   <title>LaunchMint</title>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <style>
     @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap');
     
@@ -163,7 +188,13 @@ app.get('/', (req, res) => {
       --fg: #e8e8e8;
       --dim: #666;
       --accent: #ff5c00;
+      --accent-glow: rgba(255, 92, 0, 0.3);
       --border: #222;
+      --card-bg: #111;
+    }
+    
+    html {
+      scroll-behavior: smooth;
     }
     
     body {
@@ -172,9 +203,64 @@ app.get('/', (req, res) => {
       color: var(--fg);
       font-size: 14px;
       line-height: 1.6;
+      overflow-x: hidden;
     }
     
     a { color: var(--fg); text-decoration: none; }
+    
+    /* ANIMATIONS */
+    @keyframes fadeInUp {
+      from {
+        opacity: 0;
+        transform: translateY(30px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateX(-20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateX(0);
+      }
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    
+    @keyframes glow {
+      0%, 100% { box-shadow: 0 0 20px var(--accent-glow); }
+      50% { box-shadow: 0 0 40px var(--accent-glow), 0 0 60px var(--accent-glow); }
+    }
+    
+    .animate-fade-up {
+      animation: fadeInUp 0.8s ease forwards;
+      opacity: 0;
+    }
+    
+    .animate-fade {
+      animation: fadeIn 1s ease forwards;
+      opacity: 0;
+    }
+    
+    .delay-1 { animation-delay: 0.1s; }
+    .delay-2 { animation-delay: 0.2s; }
+    .delay-3 { animation-delay: 0.3s; }
+    .delay-4 { animation-delay: 0.4s; }
+    .delay-5 { animation-delay: 0.5s; }
     
     /* NAV */
     nav {
@@ -188,13 +274,20 @@ app.get('/', (req, res) => {
       justify-content: space-between;
       align-items: center;
       border-bottom: 1px solid var(--border);
-      background: var(--bg);
+      background: rgba(10, 10, 10, 0.9);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
     }
     
     .logo {
       font-weight: 700;
-      font-size: 16px;
+      font-size: 18px;
       letter-spacing: -0.5px;
+      transition: transform 0.3s ease;
+    }
+    
+    .logo:hover {
+      transform: scale(1.05);
     }
     
     .logo span { color: var(--accent); }
@@ -208,128 +301,234 @@ app.get('/', (req, res) => {
     .nav-links a {
       color: var(--dim);
       font-size: 13px;
-      transition: color 0.15s;
+      transition: all 0.3s ease;
+      position: relative;
     }
     
-    .nav-links a:hover { color: var(--fg); }
+    .nav-links a::after {
+      content: '';
+      position: absolute;
+      bottom: -4px;
+      left: 0;
+      width: 0;
+      height: 1px;
+      background: var(--accent);
+      transition: width 0.3s ease;
+    }
+    
+    .nav-links a:hover {
+      color: var(--fg);
+    }
+    
+    .nav-links a:hover::after {
+      width: 100%;
+    }
     
     .nav-btn {
       background: transparent;
       color: var(--accent);
       border: 1px solid var(--accent);
-      padding: 8px 16px;
+      padding: 10px 20px;
       font-size: 12px;
       text-transform: uppercase;
       letter-spacing: 1px;
-      transition: all 0.15s;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative;
+      overflow: hidden;
+    }
+    
+    .nav-btn::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: var(--accent);
+      transition: left 0.3s ease;
+      z-index: -1;
+    }
+    
+    .nav-btn:hover::before {
+      left: 0;
     }
     
     .nav-btn:hover {
-      background: var(--accent);
       color: var(--bg);
+      transform: translateY(-2px);
+      box-shadow: 0 4px 20px var(--accent-glow);
     }
     
     /* MAIN */
     main {
-      max-width: 900px;
+      max-width: 1000px;
       margin: 0 auto;
       padding: 160px 40px 100px;
     }
     
     /* HERO */
     .hero {
-      margin-bottom: 120px;
+      margin-bottom: 140px;
+      position: relative;
+    }
+    
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -100px;
+      right: -200px;
+      width: 500px;
+      height: 500px;
+      background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+      opacity: 0.3;
+      pointer-events: none;
+      animation: pulse 4s ease-in-out infinite;
     }
     
     .hero-label {
       color: var(--accent);
-      font-size: 11px;
+      font-size: 12px;
       text-transform: uppercase;
-      letter-spacing: 2px;
-      margin-bottom: 24px;
+      letter-spacing: 3px;
+      margin-bottom: 28px;
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 16px;
     }
     
     .hero-label::before {
       content: '';
-      width: 40px;
-      height: 1px;
-      background: var(--accent);
+      width: 50px;
+      height: 2px;
+      background: linear-gradient(90deg, var(--accent), transparent);
     }
     
     h1 {
-      font-size: clamp(32px, 6vw, 56px);
+      font-size: clamp(36px, 7vw, 64px);
       font-weight: 700;
       line-height: 1.1;
-      letter-spacing: -1px;
-      margin-bottom: 32px;
+      letter-spacing: -2px;
+      margin-bottom: 36px;
+      background: linear-gradient(135deg, var(--fg) 0%, var(--dim) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    
+    h1 .highlight {
+      background: linear-gradient(135deg, var(--accent) 0%, #ff8c4c 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
     }
     
     .hero-desc {
       color: var(--dim);
-      font-size: 16px;
-      max-width: 500px;
-      margin-bottom: 48px;
+      font-size: 17px;
+      max-width: 550px;
+      margin-bottom: 52px;
+      line-height: 1.8;
     }
     
     .hero-actions {
       display: flex;
-      gap: 16px;
+      gap: 20px;
+      flex-wrap: wrap;
     }
     
     .btn {
-      padding: 14px 28px;
+      padding: 16px 32px;
       font-family: inherit;
       font-size: 12px;
       text-transform: uppercase;
-      letter-spacing: 1px;
+      letter-spacing: 1.5px;
       border: 1px solid var(--border);
       background: transparent;
       color: var(--fg);
       cursor: pointer;
-      transition: all 0.15s;
+      transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
       text-decoration: none;
       display: inline-block;
+      position: relative;
+      overflow: hidden;
+    }
+    
+    .btn::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 0;
+      height: 0;
+      background: var(--fg);
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      transition: width 0.6s ease, height 0.6s ease;
+      z-index: -1;
+    }
+    
+    .btn:hover::before {
+      width: 300px;
+      height: 300px;
     }
     
     .btn:hover {
+      color: var(--bg);
       border-color: var(--fg);
+      transform: translateY(-3px);
     }
     
     .btn-primary {
       background: var(--accent);
       border-color: var(--accent);
       color: #fff;
+      animation: glow 3s ease-in-out infinite;
+    }
+    
+    .btn-primary::before {
+      background: #ff7a33;
     }
     
     .btn-primary:hover {
       background: #ff7a33;
       border-color: #ff7a33;
+      color: #fff;
     }
     
     /* FEATURES */
     .features {
-      margin-bottom: 120px;
+      margin-bottom: 140px;
     }
     
     .section-label {
       color: var(--dim);
       font-size: 11px;
       text-transform: uppercase;
-      letter-spacing: 2px;
-      margin-bottom: 40px;
-      padding-bottom: 16px;
+      letter-spacing: 3px;
+      margin-bottom: 48px;
+      padding-bottom: 20px;
       border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    
+    .section-label::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      background: var(--accent);
+      border-radius: 50%;
+      animation: pulse 2s ease-in-out infinite;
     }
     
     .feature-grid {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      gap: 1px;
+      gap: 2px;
       background: var(--border);
       border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
     }
     
     @media (max-width: 700px) {
@@ -338,29 +537,61 @@ app.get('/', (req, res) => {
     
     .feature {
       background: var(--bg);
-      padding: 32px;
+      padding: 40px 32px;
+      transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative;
+      overflow: hidden;
+    }
+    
+    .feature::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 3px;
+      background: linear-gradient(90deg, var(--accent), transparent);
+      transform: scaleX(0);
+      transform-origin: left;
+      transition: transform 0.4s ease;
+    }
+    
+    .feature:hover {
+      background: var(--card-bg);
+      transform: translateY(-4px);
+    }
+    
+    .feature:hover::before {
+      transform: scaleX(1);
     }
     
     .feature-num {
       color: var(--accent);
-      font-size: 11px;
-      margin-bottom: 16px;
+      font-size: 12px;
+      margin-bottom: 20px;
+      font-weight: 600;
     }
     
     .feature h3 {
-      font-size: 14px;
+      font-size: 15px;
       font-weight: 600;
-      margin-bottom: 12px;
+      margin-bottom: 14px;
+      transition: color 0.3s ease;
+    }
+    
+    .feature:hover h3 {
+      color: var(--accent);
     }
     
     .feature p {
       color: var(--dim);
       font-size: 13px;
+      line-height: 1.7;
     }
     
     /* PLATFORMS */
     .platforms {
-      margin-bottom: 120px;
+      margin-bottom: 140px;
     }
     
     .platform-list {
@@ -370,11 +601,20 @@ app.get('/', (req, res) => {
     
     .platform {
       display: grid;
-      grid-template-columns: 120px 1fr auto;
-      gap: 40px;
+      grid-template-columns: 140px 1fr auto;
+      gap: 48px;
       align-items: center;
-      padding: 32px 0;
+      padding: 36px 24px;
       border-bottom: 1px solid var(--border);
+      transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+      border-radius: 4px;
+      margin-bottom: 4px;
+    }
+    
+    .platform:hover {
+      background: var(--card-bg);
+      transform: translateX(8px);
+      border-color: var(--accent);
     }
     
     @media (max-width: 600px) {
@@ -386,6 +626,12 @@ app.get('/', (req, res) => {
     
     .platform-name {
       font-weight: 600;
+      font-size: 16px;
+      transition: color 0.3s ease;
+    }
+    
+    .platform:hover .platform-name {
+      color: var(--accent);
     }
     
     .platform-desc {
@@ -397,26 +643,43 @@ app.get('/', (req, res) => {
       color: var(--accent);
       font-size: 11px;
       text-transform: uppercase;
-      letter-spacing: 1px;
+      letter-spacing: 1.5px;
+      padding: 6px 12px;
+      border: 1px solid var(--accent);
+      border-radius: 20px;
+      transition: all 0.3s ease;
+    }
+    
+    .platform:hover .platform-tag {
+      background: var(--accent);
+      color: var(--bg);
     }
     
     /* CODE */
     .code-section {
-      margin-bottom: 120px;
+      margin-bottom: 140px;
     }
     
     .code-block {
       background: #050505;
       border: 1px solid var(--border);
       overflow: hidden;
+      border-radius: 8px;
+      transition: all 0.4s ease;
+    }
+    
+    .code-block:hover {
+      border-color: var(--accent);
+      box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
     }
     
     .code-header {
-      padding: 16px 24px;
+      padding: 18px 28px;
       border-bottom: 1px solid var(--border);
       display: flex;
       justify-content: space-between;
       align-items: center;
+      background: rgba(255, 92, 0, 0.03);
     }
     
     .code-file {
@@ -428,13 +691,13 @@ app.get('/', (req, res) => {
       color: var(--accent);
       font-size: 11px;
       text-transform: uppercase;
-      letter-spacing: 1px;
+      letter-spacing: 1.5px;
     }
     
     .code-body {
-      padding: 24px;
+      padding: 28px;
       font-size: 13px;
-      line-height: 1.8;
+      line-height: 2;
       overflow-x: auto;
     }
     
@@ -447,93 +710,116 @@ app.get('/', (req, res) => {
     .skill-box {
       display: flex;
       gap: 12px;
-      max-width: 600px;
+      max-width: 650px;
     }
     
     .skill-box input {
       flex: 1;
       background: #050505;
       border: 1px solid var(--border);
-      padding: 14px 16px;
+      padding: 16px 20px;
       color: var(--fg);
       font-family: inherit;
       font-size: 13px;
       outline: none;
+      border-radius: 4px;
+      transition: all 0.3s ease;
     }
     
     .skill-box input:focus {
       border-color: var(--accent);
+      box-shadow: 0 0 20px var(--accent-glow);
     }
     
     .skill-box button {
       background: var(--accent);
       border: none;
-      padding: 14px 24px;
+      padding: 16px 28px;
       color: #fff;
       font-family: inherit;
       font-size: 12px;
       text-transform: uppercase;
-      letter-spacing: 1px;
+      letter-spacing: 1.5px;
       cursor: pointer;
-      transition: background 0.15s;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      border-radius: 4px;
     }
     
     .skill-box button:hover {
       background: #ff7a33;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 20px var(--accent-glow);
     }
     
     .hero-skill {
-      margin-top: 48px;
+      margin-top: 56px;
       width: 100%;
     }
     
     /* FOOTER */
     footer {
-      padding: 40px 0;
+      padding: 48px 0;
       display: flex;
       justify-content: space-between;
       align-items: center;
       color: var(--dim);
       font-size: 12px;
+      border-top: 1px solid var(--border);
     }
     
     footer a {
       color: var(--dim);
-      margin-left: 24px;
-      transition: color 0.15s;
+      margin-left: 28px;
+      transition: all 0.3s ease;
+      position: relative;
     }
     
-    footer a:hover { color: var(--accent); }
+    footer a:hover {
+      color: var(--accent);
+      transform: translateY(-2px);
+    }
+    
+    /* SCROLL REVEAL */
+    .reveal {
+      opacity: 0;
+      transform: translateY(40px);
+      transition: all 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
   </style>
 </head>
 <body>
   <nav>
-    <div class="logo">Launch<span>Mint</span></div>
+    <a href="/" class="logo">Launch<span>Mint</span></a>
     <div class="nav-links">
       <a href="#features">Features</a>
       <a href="#platforms">Platforms</a>
-      <a href="/api/tokens">Tokens</a>
+      <a href="/tokens">Tokens</a>
       <a href="/skill.md" class="nav-btn">Get Skill</a>
     </div>
   </nav>
   
   <main>
     <section class="hero">
-      <div class="hero-label">Token Infrastructure</div>
-      <h1>One API for PumpFun, USD1, and Bags.fm</h1>
-      <p class="hero-desc">Deploy tokens across three Solana launchpads. We handle wallets, metadata, and on-chain deployment. Works with any AI agent.</p>
-      <div class="hero-actions">
+      <div class="hero-label animate-fade-up">AI Agent Infrastructure</div>
+      <h1 class="animate-fade-up delay-1">Learn your agent how to deploy tokens on <span class="highlight">Base, USD1 and PumpFun</span></h1>
+      <p class="hero-desc animate-fade-up delay-2">Deploy tokens across multiple Solana launchpads with a single API. We handle wallets, metadata, and on-chain deployment. Built for AI agents.</p>
+      <div class="hero-actions animate-fade-up delay-3">
         <a href="/skill.md" class="btn btn-primary">Get Started</a>
         <a href="#features" class="btn">Documentation</a>
       </div>
       
-      <div class="skill-box hero-skill">
+      <div class="skill-box hero-skill animate-fade-up delay-4">
         <input type="text" value="${baseUrl}/skill.md" readonly id="skillUrl">
         <button onclick="copySkill()" id="copyBtn">Copy</button>
       </div>
     </section>
     
-    <section class="features" id="features">
+    <section class="features reveal" id="features">
       <div class="section-label">What we handle</div>
       <div class="feature-grid">
         <div class="feature">
@@ -569,7 +855,7 @@ app.get('/', (req, res) => {
       </div>
     </section>
     
-    <section class="platforms" id="platforms">
+    <section class="platforms reveal" id="platforms">
       <div class="section-label">Supported Platforms</div>
       <div class="platform-list">
         <div class="platform">
@@ -590,7 +876,7 @@ app.get('/', (req, res) => {
       </div>
     </section>
     
-    <section class="code-section">
+    <section class="code-section reveal">
       <div class="section-label">Example</div>
       <div class="code-block">
         <div class="code-header">
@@ -622,7 +908,7 @@ app.get('/', (req, res) => {
       <div>
         <a href="/skill.md">Docs</a>
         <a href="/health">Status</a>
-        <a href="/api/tokens">Tokens</a>
+        <a href="/tokens">Tokens</a>
       </div>
     </footer>
   </main>
@@ -631,9 +917,647 @@ app.get('/', (req, res) => {
     function copySkill() {
       navigator.clipboard.writeText(document.getElementById('skillUrl').value);
       const btn = document.getElementById('copyBtn');
-      btn.textContent = 'Copied';
-      setTimeout(() => btn.textContent = 'Copy', 2000);
+      btn.textContent = 'Copied!';
+      btn.style.background = '#22c55e';
+      setTimeout(() => {
+        btn.textContent = 'Copy';
+        btn.style.background = '';
+      }, 2000);
     }
+    
+    // Scroll reveal animation
+    const revealElements = document.querySelectorAll('.reveal');
+    
+    const revealOnScroll = () => {
+      revealElements.forEach(el => {
+        const rect = el.getBoundingClientRect();
+        const windowHeight = window.innerHeight;
+        
+        if (rect.top < windowHeight - 100) {
+          el.classList.add('visible');
+        }
+      });
+    };
+    
+    window.addEventListener('scroll', revealOnScroll);
+    revealOnScroll(); // Initial check
+    
+    // Smooth scroll for anchor links
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        e.preventDefault();
+        const target = document.querySelector(this.getAttribute('href'));
+        if (target) {
+          target.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start'
+          });
+        }
+      });
+    });
+  </script>
+</body>
+</html>
+  `);
+});
+
+// ============================================
+// TOKENS PAGE
+// ============================================
+app.get('/tokens', (req, res) => {
+  const baseUrl = `${req.protocol}://${req.get('host')}`;
+  
+  res.send(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Tokens - LaunchMint</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap');
+    
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    :root {
+      --bg: #0a0a0a;
+      --fg: #e8e8e8;
+      --dim: #666;
+      --accent: #ff5c00;
+      --accent-glow: rgba(255, 92, 0, 0.3);
+      --border: #222;
+      --card-bg: #111;
+      --success: #22c55e;
+      --pumpfun: #00d4aa;
+      --bonk: #f7931a;
+      --bags: #8b5cf6;
+    }
+    
+    html { scroll-behavior: smooth; }
+    
+    body {
+      font-family: 'IBM Plex Mono', monospace;
+      background: var(--bg);
+      color: var(--fg);
+      font-size: 14px;
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+    
+    a { color: var(--fg); text-decoration: none; }
+    
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(30px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    
+    @keyframes shimmer {
+      0% { background-position: -200% 0; }
+      100% { background-position: 200% 0; }
+    }
+    
+    /* NAV */
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      padding: 20px 40px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      background: rgba(10, 10, 10, 0.9);
+      backdrop-filter: blur(20px);
+    }
+    
+    .logo {
+      font-weight: 700;
+      font-size: 18px;
+      letter-spacing: -0.5px;
+      transition: transform 0.3s ease;
+    }
+    
+    .logo:hover { transform: scale(1.05); }
+    .logo span { color: var(--accent); }
+    
+    .nav-links {
+      display: flex;
+      gap: 40px;
+      align-items: center;
+    }
+    
+    .nav-links a {
+      color: var(--dim);
+      font-size: 13px;
+      transition: all 0.3s ease;
+      position: relative;
+    }
+    
+    .nav-links a::after {
+      content: '';
+      position: absolute;
+      bottom: -4px;
+      left: 0;
+      width: 0;
+      height: 1px;
+      background: var(--accent);
+      transition: width 0.3s ease;
+    }
+    
+    .nav-links a:hover { color: var(--fg); }
+    .nav-links a:hover::after { width: 100%; }
+    .nav-links a.active { color: var(--accent); }
+    .nav-links a.active::after { width: 100%; }
+    
+    .nav-btn {
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      padding: 10px 20px;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    
+    .nav-btn:hover {
+      background: var(--accent);
+      color: var(--bg);
+      transform: translateY(-2px);
+      box-shadow: 0 4px 20px var(--accent-glow);
+    }
+    
+    /* MAIN */
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 140px 40px 100px;
+    }
+    
+    /* PAGE HEADER */
+    .page-header {
+      margin-bottom: 60px;
+      animation: fadeInUp 0.8s ease forwards;
+    }
+    
+    .page-header h1 {
+      font-size: 48px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      letter-spacing: -2px;
+    }
+    
+    .page-header p {
+      color: var(--dim);
+      font-size: 16px;
+    }
+    
+    /* STATS */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 20px;
+      margin-bottom: 60px;
+      animation: fadeInUp 0.8s ease 0.1s forwards;
+      opacity: 0;
+    }
+    
+    @media (max-width: 800px) {
+      .stats-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    
+    .stat-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      padding: 28px;
+      border-radius: 8px;
+      transition: all 0.4s ease;
+    }
+    
+    .stat-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-4px);
+    }
+    
+    .stat-label {
+      color: var(--dim);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      margin-bottom: 12px;
+    }
+    
+    .stat-value {
+      font-size: 32px;
+      font-weight: 700;
+      color: var(--accent);
+    }
+    
+    /* FILTER BAR */
+    .filter-bar {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 32px;
+      animation: fadeInUp 0.8s ease 0.2s forwards;
+      opacity: 0;
+    }
+    
+    .filter-btn {
+      padding: 12px 20px;
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--dim);
+      font-family: inherit;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: all 0.3s ease;
+    }
+    
+    .filter-btn:hover, .filter-btn.active {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    
+    .filter-btn.active {
+      background: rgba(255, 92, 0, 0.1);
+    }
+    
+    /* TOKENS LIST */
+    .tokens-container {
+      animation: fadeInUp 0.8s ease 0.3s forwards;
+      opacity: 0;
+    }
+    
+    .tokens-header {
+      display: grid;
+      grid-template-columns: 2fr 1fr 1fr 1fr 100px;
+      gap: 20px;
+      padding: 16px 24px;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px 8px 0 0;
+      color: var(--dim);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+    }
+    
+    @media (max-width: 700px) {
+      .tokens-header { display: none; }
+    }
+    
+    .tokens-list {
+      border: 1px solid var(--border);
+      border-top: none;
+      border-radius: 0 0 8px 8px;
+      overflow: hidden;
+    }
+    
+    .token-row {
+      display: grid;
+      grid-template-columns: 2fr 1fr 1fr 1fr 100px;
+      gap: 20px;
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--border);
+      transition: all 0.3s ease;
+      align-items: center;
+    }
+    
+    .token-row:last-child { border-bottom: none; }
+    
+    .token-row:hover {
+      background: var(--card-bg);
+    }
+    
+    @media (max-width: 700px) {
+      .token-row {
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+    }
+    
+    .token-info {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    
+    .token-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), #ff8c4c);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 14px;
+    }
+    
+    .token-name {
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    
+    .token-symbol {
+      color: var(--dim);
+      font-size: 12px;
+    }
+    
+    .token-platform {
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 12px;
+      display: inline-block;
+    }
+    
+    .token-platform.pumpfun {
+      background: rgba(0, 212, 170, 0.15);
+      color: var(--pumpfun);
+    }
+    
+    .token-platform.bonk {
+      background: rgba(247, 147, 26, 0.15);
+      color: var(--bonk);
+    }
+    
+    .token-platform.bags {
+      background: rgba(139, 92, 246, 0.15);
+      color: var(--bags);
+    }
+    
+    .token-address {
+      font-size: 12px;
+      color: var(--dim);
+      font-family: monospace;
+    }
+    
+    .token-date {
+      color: var(--dim);
+      font-size: 13px;
+    }
+    
+    .token-link {
+      color: var(--accent);
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.3s ease;
+    }
+    
+    .token-link:hover {
+      transform: translateX(4px);
+    }
+    
+    .token-link svg {
+      width: 14px;
+      height: 14px;
+    }
+    
+    /* EMPTY STATE */
+    .empty-state {
+      text-align: center;
+      padding: 80px 40px;
+      color: var(--dim);
+    }
+    
+    .empty-icon {
+      font-size: 64px;
+      margin-bottom: 24px;
+      opacity: 0.3;
+    }
+    
+    .empty-state h3 {
+      font-size: 20px;
+      margin-bottom: 12px;
+      color: var(--fg);
+    }
+    
+    .empty-state p {
+      max-width: 400px;
+      margin: 0 auto 32px;
+    }
+    
+    .btn {
+      padding: 14px 28px;
+      font-family: inherit;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      text-decoration: none;
+      display: inline-block;
+      border-radius: 4px;
+    }
+    
+    .btn:hover {
+      background: #ff7a33;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 20px var(--accent-glow);
+    }
+    
+    /* FOOTER */
+    footer {
+      padding: 48px 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: var(--dim);
+      font-size: 12px;
+      border-top: 1px solid var(--border);
+      margin-top: 80px;
+    }
+    
+    footer a {
+      color: var(--dim);
+      margin-left: 28px;
+      transition: all 0.3s ease;
+    }
+    
+    footer a:hover {
+      color: var(--accent);
+    }
+    
+    /* Loading shimmer */
+    .loading {
+      background: linear-gradient(90deg, var(--card-bg) 25%, var(--border) 50%, var(--card-bg) 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.5s infinite;
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/" class="logo">Launch<span>Mint</span></a>
+    <div class="nav-links">
+      <a href="/#features">Features</a>
+      <a href="/#platforms">Platforms</a>
+      <a href="/tokens" class="active">Tokens</a>
+      <a href="/skill.md" class="nav-btn">Get Skill</a>
+    </div>
+  </nav>
+  
+  <main>
+    <div class="page-header">
+      <h1>Launched Tokens</h1>
+      <p>All tokens deployed through LaunchMint API</p>
+    </div>
+    
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Total Tokens</div>
+        <div class="stat-value" id="totalTokens">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">PumpFun</div>
+        <div class="stat-value" id="pumpfunCount">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">USD1/Bonk</div>
+        <div class="stat-value" id="bonkCount">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Bags.fm</div>
+        <div class="stat-value" id="bagsCount">-</div>
+      </div>
+    </div>
+    
+    <div class="filter-bar">
+      <button class="filter-btn active" data-filter="all">All</button>
+      <button class="filter-btn" data-filter="pumpfun">PumpFun</button>
+      <button class="filter-btn" data-filter="bonk">USD1/Bonk</button>
+      <button class="filter-btn" data-filter="bags">Bags.fm</button>
+    </div>
+    
+    <div class="tokens-container">
+      <div class="tokens-header">
+        <span>Token</span>
+        <span>Platform</span>
+        <span>Address</span>
+        <span>Launched</span>
+        <span>Link</span>
+      </div>
+      <div class="tokens-list" id="tokensList">
+        <div class="empty-state">
+          <div class="empty-icon">🚀</div>
+          <h3>No tokens launched yet</h3>
+          <p>Be the first to launch a token through LaunchMint API. Get started with our AI agent skill.</p>
+          <a href="/skill.md" class="btn">Get Skill</a>
+        </div>
+      </div>
+    </div>
+    
+    <footer>
+      <span>&copy; 2026 launchmint.fun</span>
+      <div>
+        <a href="/skill.md">Docs</a>
+        <a href="/health">Status</a>
+        <a href="/tokens">Tokens</a>
+      </div>
+    </footer>
+  </main>
+  
+  <script>
+    let allTokens = [];
+    let currentFilter = 'all';
+    
+    async function loadTokens() {
+      try {
+        const response = await fetch('/api/tokens');
+        const data = await response.json();
+        
+        if (data.success) {
+          allTokens = data.tokens;
+          updateStats(allTokens);
+          renderTokens(allTokens);
+        }
+      } catch (error) {
+        console.error('Failed to load tokens:', error);
+      }
+    }
+    
+    function updateStats(tokens) {
+      document.getElementById('totalTokens').textContent = tokens.length;
+      document.getElementById('pumpfunCount').textContent = tokens.filter(t => t.platform === 'pumpfun').length;
+      document.getElementById('bonkCount').textContent = tokens.filter(t => t.platform === 'bonk').length;
+      document.getElementById('bagsCount').textContent = tokens.filter(t => t.platform === 'bags').length;
+    }
+    
+    function renderTokens(tokens) {
+      const container = document.getElementById('tokensList');
+      
+      if (tokens.length === 0) {
+        container.innerHTML = \`
+          <div class="empty-state">
+            <div class="empty-icon">🚀</div>
+            <h3>No tokens launched yet</h3>
+            <p>Be the first to launch a token through LaunchMint API. Get started with our AI agent skill.</p>
+            <a href="/skill.md" class="btn">Get Skill</a>
+          </div>
+        \`;
+        return;
+      }
+      
+      container.innerHTML = tokens.map(token => \`
+        <div class="token-row" data-platform="\${token.platform}">
+          <div class="token-info">
+            <div class="token-icon">\${token.symbol.substring(0, 2).toUpperCase()}</div>
+            <div>
+              <div class="token-name">\${token.name}</div>
+              <div class="token-symbol">\${token.symbol}</div>
+            </div>
+          </div>
+          <div>
+            <span class="token-platform \${token.platform}">\${token.platform}</span>
+          </div>
+          <div class="token-address">\${token.tokenAddress ? token.tokenAddress.substring(0, 8) + '...' : '-'}</div>
+          <div class="token-date">\${token.launchedAt ? new Date(token.launchedAt).toLocaleDateString() : '-'}</div>
+          <a href="\${token.url}" target="_blank" class="token-link">
+            View
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+            </svg>
+          </a>
+        </div>
+      \`).join('');
+    }
+    
+    // Filter buttons
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        
+        currentFilter = btn.dataset.filter;
+        const filtered = currentFilter === 'all' 
+          ? allTokens 
+          : allTokens.filter(t => t.platform === currentFilter);
+        
+        renderTokens(filtered);
+      });
+    });
+    
+    // Load tokens on page load
+    loadTokens();
+    
+    // Refresh every 30 seconds
+    setInterval(loadTokens, 30000);
   </script>
 </body>
 </html>
