@@ -806,7 +806,7 @@ app.get('/', (req, res) => {
   <main>
     <section class="hero">
       <div class="hero-label animate-fade-up">AI Agent Infrastructure</div>
-      <h1 class="animate-fade-up delay-1">Learn your agent how to deploy tokens on <span class="highlight">Base, USD1 and PumpFun</span></h1>
+      <h1 class="animate-fade-up delay-1">Learn your agent how to deploy tokens on <span class="highlight">Bags, USD1 and PumpFun</span></h1>
       <p class="hero-desc animate-fade-up delay-2">Deploy tokens across multiple Solana launchpads with a single API. We handle wallets, metadata, and on-chain deployment. Built for AI agents.</p>
       <div class="hero-actions animate-fade-up delay-3">
         <a href="/skill.md" class="btn btn-primary">Get Started</a>
@@ -1455,7 +1455,7 @@ app.get('/tokens', (req, res) => {
       </div>
       <div class="tokens-list" id="tokensList">
         <div class="empty-state">
-          <div class="empty-icon">🚀</div>
+          <div class="empty-icon"></div>
           <h3>No tokens launched yet</h3>
           <p>Be the first to launch a token through LaunchMint API. Get started with our AI agent skill.</p>
           <a href="/skill.md" class="btn">Get Skill</a>
@@ -1505,7 +1505,7 @@ app.get('/tokens', (req, res) => {
       if (tokens.length === 0) {
         container.innerHTML = \`
           <div class="empty-state">
-            <div class="empty-icon">🚀</div>
+            <div class="empty-icon"></div>
             <h3>No tokens launched yet</h3>
             <p>Be the first to launch a token through LaunchMint API. Get started with our AI agent skill.</p>
             <a href="/skill.md" class="btn">Get Skill</a>
