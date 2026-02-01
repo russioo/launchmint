@@ -1605,12 +1605,31 @@ Launch tokens on Solana. Works with PumpFun, USD1/Bonk, and Bags.fm.
 **No API key required!** Uses the official @pump-fun/pump-sdk.
 Just provide your wallet's private key.
 
-### Bonk/USD1
-Get API key from: https://pumpportal.fun/trading-api/setup/
+---
 
-### Bags.fm
-Get API key from: https://dev.bags.fm
-Each user needs their own Bags API key for fee sharing to work correctly.
+### Bonk/USD1 (PumpPortal API Key)
+
+1. Go to **https://pumpportal.fun/trading-api/setup/**
+2. Connect your Solana wallet
+3. Click "Generate API Key"
+4. Copy and save your API key securely
+5. Use this key in the \`apiKey\` field when launching on \`bonk\` platform
+
+---
+
+### Bags.fm API Key
+
+1. Go to **https://dev.bags.fm**
+2. Sign in with your wallet (Phantom, Backpack, etc.)
+3. Click "Create API Key"
+4. Give your key a name (e.g., "My Agent")
+5. Copy and save your API key securely (you can create up to 10 keys)
+6. Use this key in the \`apiKey\` field when launching on \`bags\` platform
+
+**Important:** Each user needs their own Bags API key. This ensures:
+- Fee sharing works correctly with your wallet
+- Your launches are tracked to your account
+- You can manage and revoke keys anytime
 
 ---
 
