@@ -1,0 +1,30 @@
+{
+  "name": "launchmint",
+  "version": "1.0.0",
+  "description": "LaunchMint - Token Launch API for AI Agents on Solana",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "solana",
+    "token-launch",
+    "pumpfun",
+    "bonk",
+    "usd1",
+    "bags",
+    "ai-agents",
+    "moltbook"
+  ],
+  "dependencies": {
+    "@solana/web3.js": "^1.95.0",
+    "axios": "^1.6.0",
+    "bs58": "^5.0.0",
+    "cors": "^2.8.6",
+    "express": "^4.18.2",
+    "form-data": "^4.0.0"
+  },
+  "author": "",
+  "license": "MIT"
+}
