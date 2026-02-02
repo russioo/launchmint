@@ -1,7 +1,7 @@
 /**
  * LaunchMint API
  * Token Launch for AI Agents on Solana
- * Supports: PumpFun | Bonk/USD1 | Bags.fm
+ * Supports: PumpFun | Bags.fm | USD1/Bonk.fun
  */
 
 const express = require('express');
@@ -10,8 +10,10 @@ const https = require('https');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL, VersionedTransaction, Transaction, SystemProgram } = require('@solana/web3.js');
+const { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL, VersionedTransaction, Transaction, TransactionMessage } = require('@solana/web3.js');
 const { PumpSdk, getBuyTokenAmountFromSolAmount } = require('@pump-fun/pump-sdk');
+const { Raydium, TxVersion, LaunchpadConfig, LAUNCHPAD_PROGRAM } = require('@raydium-io/raydium-sdk-v2');
+const { getAssociatedTokenAddress, getAccount } = require('@solana/spl-token');
 const BN = require('bn.js');
 const bs58 = require('bs58');
 const FormData = require('form-data');
@@ -28,11 +30,15 @@ const connection = new Connection(RPC_URL, 'confirmed');
 // Initialize Pump SDK
 const pumpSdk = new PumpSdk(connection);
 
-// Note: Users must provide their own Bags API key for bags.fm launches
+// USD1/Bonk.fun Constants
+const USD1_MINT = new PublicKey("USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB");
+const USD1_CONFIG = new PublicKey("EPiZbnrThjyLnoQ6QQzkxeFqyL5uyg9RzNHHAudUPxBz");
+const BONK_PLATFORM_ID = new PublicKey("FfYek5vEz23cMkWsdJwG2oa6EphsvXSHrGpdALN4g6W1");
+const WSOL_MINT = new PublicKey("So11111111111111111111111111111111111111112");
+const JUP_API = "https://lite-api.jup.ag/swap/v1";
 
 // Store launched tokens (in memory - use database in production)
 const launchedTokens = [];
-const wallets = new Map(); // Store generated wallets for claims
 
 // ============================================
 // HELPERS
@@ -109,42 +115,62 @@ async function uploadToPumpIPFS(imageUrl, name, symbol, description, twitter, te
   });
 }
 
-async function uploadToBonkIPFS(imageUrl, name, symbol, description, website) {
-  // Download image from URL
-  const imageRes = await fetch(imageUrl);
-  const imageBuffer = Buffer.from(await imageRes.arrayBuffer());
+// USD1 Helper: Get USD1 balance
+async function getUsd1Balance(owner) {
+  try {
+    const ata = await getAssociatedTokenAddress(USD1_MINT, owner);
+    const account = await getAccount(connection, ata);
+    return Number(account.amount) / 1_000_000; // 6 decimals
+  } catch {
+    return 0;
+  }
+}
+
+// USD1 Helper: Swap SOL to USD1 via Jupiter
+async function swapSolToUsd1(wallet, usd1Amount) {
+  if (usd1Amount <= 0) return "";
   
-  // Upload image first
-  const FormData = require('form-data');
-  const imgForm = new FormData();
-  imgForm.append('image', imageBuffer, { filename: 'token.png', contentType: 'image/png' });
-
-  const imgUri = await new Promise((resolve, reject) => {
-    const req = https.request({
-      hostname: 'nft-storage.letsbonk22.workers.dev',
-      path: '/upload/img',
-      method: 'POST',
-      headers: imgForm.getHeaders()
-    }, (res) => {
-      let body = '';
-      res.on('data', chunk => body += chunk);
-      res.on('end', () => resolve(body));
-    });
-    req.on('error', reject);
-    imgForm.pipe(req);
+  console.log(`[USD1] Swapping SOL → ${usd1Amount} USD1...`);
+  
+  const outAmount = Math.ceil(usd1Amount * 1_000_000);
+  
+  // Get quote
+  const quoteRes = await fetch(
+    `${JUP_API}/quote?inputMint=${WSOL_MINT.toBase58()}&outputMint=${USD1_MINT.toBase58()}&amount=${outAmount}&swapMode=ExactOut&slippageBps=150`
+  );
+  if (!quoteRes.ok) throw new Error(`Jupiter quote failed: ${quoteRes.statusText}`);
+  const quote = await quoteRes.json();
+  
+  console.log(`[USD1] Will spend ~${(Number(quote.inAmount) / 1e9).toFixed(4)} SOL`);
+  
+  // Get swap transaction
+  const swapRes = await fetch(`${JUP_API}/swap`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      quoteResponse: quote,
+      userPublicKey: wallet.publicKey.toBase58(),
+      wrapAndUnwrapSol: true,
+      dynamicComputeUnitLimit: true,
+      prioritizationFeeLamports: "auto",
+    }),
   });
-
-  // Upload metadata
-  const metaRes = await httpsRequest('nft-storage.letsbonk22.workers.dev', '/upload/meta', 'POST', {
-    createdOn: 'https://launchmint.xyz',
-    description: description || '',
-    image: imgUri,
-    name,
-    symbol,
-    website: website || ''
-  });
-
-  return metaRes.data;
+  if (!swapRes.ok) throw new Error(`Jupiter swap failed: ${swapRes.statusText}`);
+  
+  const swap = await swapRes.json();
+  if (!swap.swapTransaction) throw new Error("No swap transaction returned");
+  
+  // Sign & send
+  const vtx = VersionedTransaction.deserialize(Buffer.from(swap.swapTransaction, "base64"));
+  vtx.sign([wallet]);
+  
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+  const sig = await connection.sendRawTransaction(vtx.serialize(), { maxRetries: 3 });
+  
+  await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+  
+  console.log(`[USD1] Swap confirmed: ${sig}`);
+  return sig;
 }
 
 // ============================================
@@ -200,9 +226,7 @@ app.get('/', (req, res) => {
       --card-bg: #111;
     }
     
-    html {
-      scroll-behavior: smooth;
-    }
+    html { scroll-behavior: smooth; }
     
     body {
       font-family: 'IBM Plex Mono', monospace;
@@ -215,32 +239,9 @@ app.get('/', (req, res) => {
     
     a { color: var(--fg); text-decoration: none; }
     
-    /* ANIMATIONS */
     @keyframes fadeInUp {
-      from {
-        opacity: 0;
-        transform: translateY(30px);
-      }
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
-    }
-    
-    @keyframes fadeIn {
-      from { opacity: 0; }
-      to { opacity: 1; }
-    }
-    
-    @keyframes slideIn {
-      from {
-        opacity: 0;
-        transform: translateX(-20px);
-      }
-      to {
-        opacity: 1;
-        transform: translateX(0);
-      }
+      from { opacity: 0; transform: translateY(30px); }
+      to { opacity: 1; transform: translateY(0); }
     }
     
     @keyframes pulse {
@@ -253,23 +254,12 @@ app.get('/', (req, res) => {
       50% { box-shadow: 0 0 40px var(--accent-glow), 0 0 60px var(--accent-glow); }
     }
     
-    .animate-fade-up {
-      animation: fadeInUp 0.8s ease forwards;
-      opacity: 0;
-    }
-    
-    .animate-fade {
-      animation: fadeIn 1s ease forwards;
-      opacity: 0;
-    }
-    
+    .animate-fade-up { animation: fadeInUp 0.8s ease forwards; opacity: 0; }
     .delay-1 { animation-delay: 0.1s; }
     .delay-2 { animation-delay: 0.2s; }
     .delay-3 { animation-delay: 0.3s; }
     .delay-4 { animation-delay: 0.4s; }
-    .delay-5 { animation-delay: 0.5s; }
     
-    /* NAV */
     nav {
       position: fixed;
       top: 0;
@@ -283,53 +273,14 @@ app.get('/', (req, res) => {
       border-bottom: 1px solid var(--border);
       background: rgba(10, 10, 10, 0.9);
       backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
     }
     
-    .logo {
-      font-weight: 700;
-      font-size: 18px;
-      letter-spacing: -0.5px;
-      transition: transform 0.3s ease;
-    }
-    
-    .logo:hover {
-      transform: scale(1.05);
-    }
-    
+    .logo { font-weight: 700; font-size: 18px; letter-spacing: -0.5px; }
     .logo span { color: var(--accent); }
     
-    .nav-links {
-      display: flex;
-      gap: 40px;
-      align-items: center;
-    }
-    
-    .nav-links a {
-      color: var(--dim);
-      font-size: 13px;
-      transition: all 0.3s ease;
-      position: relative;
-    }
-    
-    .nav-links a::after {
-      content: '';
-      position: absolute;
-      bottom: -4px;
-      left: 0;
-      width: 0;
-      height: 1px;
-      background: var(--accent);
-      transition: width 0.3s ease;
-    }
-    
-    .nav-links a:hover {
-      color: var(--fg);
-    }
-    
-    .nav-links a:hover::after {
-      width: 100%;
-    }
+    .nav-links { display: flex; gap: 40px; align-items: center; }
+    .nav-links a { color: var(--dim); font-size: 13px; transition: all 0.3s ease; }
+    .nav-links a:hover { color: var(--fg); }
     
     .nav-btn {
       background: transparent;
@@ -339,58 +290,17 @@ app.get('/', (req, res) => {
       font-size: 12px;
       text-transform: uppercase;
       letter-spacing: 1px;
-      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-      position: relative;
-      overflow: hidden;
-    }
-    
-    .nav-btn::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: -100%;
-      width: 100%;
-      height: 100%;
-      background: var(--accent);
-      transition: left 0.3s ease;
-      z-index: -1;
-    }
-    
-    .nav-btn:hover::before {
-      left: 0;
+      transition: all 0.3s ease;
     }
     
     .nav-btn:hover {
+      background: var(--accent);
       color: var(--bg);
-      transform: translateY(-2px);
-      box-shadow: 0 4px 20px var(--accent-glow);
     }
     
-    /* MAIN */
-    main {
-      max-width: 1000px;
-      margin: 0 auto;
-      padding: 160px 40px 100px;
-    }
+    main { max-width: 1000px; margin: 0 auto; padding: 160px 40px 100px; }
     
-    /* HERO */
-    .hero {
-      margin-bottom: 140px;
-      position: relative;
-    }
-    
-    .hero::before {
-      content: '';
-      position: absolute;
-      top: -100px;
-      right: -200px;
-      width: 500px;
-      height: 500px;
-      background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
-      opacity: 0.3;
-      pointer-events: none;
-      animation: pulse 4s ease-in-out infinite;
-    }
+    .hero { margin-bottom: 140px; position: relative; }
     
     .hero-label {
       color: var(--accent);
@@ -416,17 +326,9 @@ app.get('/', (req, res) => {
       line-height: 1.1;
       letter-spacing: -2px;
       margin-bottom: 36px;
-      background: linear-gradient(135deg, var(--fg) 0%, var(--dim) 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
     }
     
-    h1 .highlight {
-      background: linear-gradient(135deg, var(--accent) 0%, #ff8c4c 100%);
-      -webkit-background-clip: text;
-      background-clip: text;
-    }
+    h1 .highlight { color: var(--accent); }
     
     .hero-desc {
       color: var(--dim);
@@ -436,11 +338,7 @@ app.get('/', (req, res) => {
       line-height: 1.8;
     }
     
-    .hero-actions {
-      display: flex;
-      gap: 20px;
-      flex-wrap: wrap;
-    }
+    .hero-actions { display: flex; gap: 20px; flex-wrap: wrap; }
     
     .btn {
       padding: 16px 32px;
@@ -452,37 +350,11 @@ app.get('/', (req, res) => {
       background: transparent;
       color: var(--fg);
       cursor: pointer;
-      transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+      transition: all 0.4s ease;
       text-decoration: none;
-      display: inline-block;
-      position: relative;
-      overflow: hidden;
     }
     
-    .btn::before {
-      content: '';
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      width: 0;
-      height: 0;
-      background: var(--fg);
-      border-radius: 50%;
-      transform: translate(-50%, -50%);
-      transition: width 0.6s ease, height 0.6s ease;
-      z-index: -1;
-    }
-    
-    .btn:hover::before {
-      width: 300px;
-      height: 300px;
-    }
-    
-    .btn:hover {
-      color: var(--bg);
-      border-color: var(--fg);
-      transform: translateY(-3px);
-    }
+    .btn:hover { background: var(--fg); color: var(--bg); }
     
     .btn-primary {
       background: var(--accent);
@@ -491,20 +363,9 @@ app.get('/', (req, res) => {
       animation: glow 3s ease-in-out infinite;
     }
     
-    .btn-primary::before {
-      background: #ff7a33;
-    }
+    .btn-primary:hover { background: #ff7a33; }
     
-    .btn-primary:hover {
-      background: #ff7a33;
-      border-color: #ff7a33;
-      color: #fff;
-    }
-    
-    /* FEATURES */
-    .features {
-      margin-bottom: 140px;
-    }
+    .features { margin-bottom: 140px; }
     
     .section-label {
       color: var(--dim);
@@ -514,18 +375,6 @@ app.get('/', (req, res) => {
       margin-bottom: 48px;
       padding-bottom: 20px;
       border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      gap: 16px;
-    }
-    
-    .section-label::before {
-      content: '';
-      width: 8px;
-      height: 8px;
-      background: var(--accent);
-      border-radius: 50%;
-      animation: pulse 2s ease-in-out infinite;
     }
     
     .feature-grid {
@@ -534,8 +383,6 @@ app.get('/', (req, res) => {
       gap: 2px;
       background: var(--border);
       border: 1px solid var(--border);
-      border-radius: 4px;
-      overflow: hidden;
     }
     
     @media (max-width: 700px) {
@@ -545,66 +392,16 @@ app.get('/', (req, res) => {
     .feature {
       background: var(--bg);
       padding: 40px 32px;
-      transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-      position: relative;
-      overflow: hidden;
+      transition: all 0.4s ease;
     }
     
-    .feature::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 3px;
-      background: linear-gradient(90deg, var(--accent), transparent);
-      transform: scaleX(0);
-      transform-origin: left;
-      transition: transform 0.4s ease;
-    }
+    .feature:hover { background: var(--card-bg); }
     
-    .feature:hover {
-      background: var(--card-bg);
-      transform: translateY(-4px);
-    }
+    .feature-num { color: var(--accent); font-size: 12px; margin-bottom: 20px; font-weight: 600; }
+    .feature h3 { font-size: 15px; font-weight: 600; margin-bottom: 14px; }
+    .feature p { color: var(--dim); font-size: 13px; line-height: 1.7; }
     
-    .feature:hover::before {
-      transform: scaleX(1);
-    }
-    
-    .feature-num {
-      color: var(--accent);
-      font-size: 12px;
-      margin-bottom: 20px;
-      font-weight: 600;
-    }
-    
-    .feature h3 {
-      font-size: 15px;
-      font-weight: 600;
-      margin-bottom: 14px;
-      transition: color 0.3s ease;
-    }
-    
-    .feature:hover h3 {
-      color: var(--accent);
-    }
-    
-    .feature p {
-      color: var(--dim);
-      font-size: 13px;
-      line-height: 1.7;
-    }
-    
-    /* PLATFORMS */
-    .platforms {
-      margin-bottom: 140px;
-    }
-    
-    .platform-list {
-      display: flex;
-      flex-direction: column;
-    }
+    .platforms { margin-bottom: 140px; }
     
     .platform {
       display: grid;
@@ -613,39 +410,17 @@ app.get('/', (req, res) => {
       align-items: center;
       padding: 36px 24px;
       border-bottom: 1px solid var(--border);
-      transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-      border-radius: 4px;
-      margin-bottom: 4px;
+      transition: all 0.4s ease;
     }
     
-    .platform:hover {
-      background: var(--card-bg);
-      transform: translateX(8px);
-      border-color: var(--accent);
-    }
+    .platform:hover { background: var(--card-bg); }
     
     @media (max-width: 600px) {
-      .platform {
-        grid-template-columns: 1fr;
-        gap: 16px;
-      }
+      .platform { grid-template-columns: 1fr; gap: 16px; }
     }
     
-    .platform-name {
-      font-weight: 600;
-      font-size: 16px;
-      transition: color 0.3s ease;
-    }
-    
-    .platform:hover .platform-name {
-      color: var(--accent);
-    }
-    
-    .platform-desc {
-      color: var(--dim);
-      font-size: 13px;
-    }
-    
+    .platform-name { font-weight: 600; font-size: 16px; }
+    .platform-desc { color: var(--dim); font-size: 13px; }
     .platform-tag {
       color: var(--accent);
       font-size: 11px;
@@ -654,71 +429,9 @@ app.get('/', (req, res) => {
       padding: 6px 12px;
       border: 1px solid var(--accent);
       border-radius: 20px;
-      transition: all 0.3s ease;
     }
     
-    .platform:hover .platform-tag {
-      background: var(--accent);
-      color: var(--bg);
-    }
-    
-    /* CODE */
-    .code-section {
-      margin-bottom: 140px;
-    }
-    
-    .code-block {
-      background: #050505;
-      border: 1px solid var(--border);
-      overflow: hidden;
-      border-radius: 8px;
-      transition: all 0.4s ease;
-    }
-    
-    .code-block:hover {
-      border-color: var(--accent);
-      box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
-    }
-    
-    .code-header {
-      padding: 18px 28px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      background: rgba(255, 92, 0, 0.03);
-    }
-    
-    .code-file {
-      color: var(--dim);
-      font-size: 12px;
-    }
-    
-    .code-lang {
-      color: var(--accent);
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 1.5px;
-    }
-    
-    .code-body {
-      padding: 28px;
-      font-size: 13px;
-      line-height: 2;
-      overflow-x: auto;
-    }
-    
-    .code-body .c { color: #666; }
-    .code-body .k { color: var(--accent); }
-    .code-body .s { color: #98c379; }
-    .code-body .p { color: #e8e8e8; }
-    
-    /* SKILL */
-    .skill-box {
-      display: flex;
-      gap: 12px;
-      max-width: 650px;
-    }
+    .skill-box { display: flex; gap: 12px; max-width: 650px; }
     
     .skill-box input {
       flex: 1;
@@ -729,14 +442,9 @@ app.get('/', (req, res) => {
       font-family: inherit;
       font-size: 13px;
       outline: none;
-      border-radius: 4px;
-      transition: all 0.3s ease;
     }
     
-    .skill-box input:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 20px var(--accent-glow);
-    }
+    .skill-box input:focus { border-color: var(--accent); }
     
     .skill-box button {
       background: var(--accent);
@@ -748,22 +456,13 @@ app.get('/', (req, res) => {
       text-transform: uppercase;
       letter-spacing: 1.5px;
       cursor: pointer;
-      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-      border-radius: 4px;
+      transition: all 0.3s ease;
     }
     
-    .skill-box button:hover {
-      background: #ff7a33;
-      transform: translateY(-2px);
-      box-shadow: 0 4px 20px var(--accent-glow);
-    }
+    .skill-box button:hover { background: #ff7a33; }
     
-    .hero-skill {
-      margin-top: 56px;
-      width: 100%;
-    }
+    .hero-skill { margin-top: 56px; width: 100%; }
     
-    /* FOOTER */
     footer {
       padding: 48px 0;
       display: flex;
@@ -774,29 +473,8 @@ app.get('/', (req, res) => {
       border-top: 1px solid var(--border);
     }
     
-    footer a {
-      color: var(--dim);
-      margin-left: 28px;
-      transition: all 0.3s ease;
-      position: relative;
-    }
-    
-    footer a:hover {
-      color: var(--accent);
-      transform: translateY(-2px);
-    }
-    
-    /* SCROLL REVEAL */
-    .reveal {
-      opacity: 0;
-      transform: translateY(40px);
-      transition: all 0.8s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-    
-    .reveal.visible {
-      opacity: 1;
-      transform: translateY(0);
-    }
+    footer a { color: var(--dim); margin-left: 28px; transition: all 0.3s ease; }
+    footer a:hover { color: var(--accent); }
   </style>
 </head>
 <body>
@@ -813,8 +491,8 @@ app.get('/', (req, res) => {
   <main>
     <section class="hero">
       <div class="hero-label animate-fade-up">AI Agent Infrastructure</div>
-      <h1 class="animate-fade-up delay-1">Learn your agent how to deploy tokens on <span class="highlight">Bags, USD1 and PumpFun</span></h1>
-      <p class="hero-desc animate-fade-up delay-2">Deploy tokens across multiple Solana launchpads with a single API. We handle wallets, metadata, and on-chain deployment. Built for AI agents.</p>
+      <h1 class="animate-fade-up delay-1">Deploy tokens on <span class="highlight">PumpFun, Bags.fm & USD1</span></h1>
+      <p class="hero-desc animate-fade-up delay-2">Launch tokens across multiple Solana launchpads with a single API. Built for AI agents. No PumpPortal needed.</p>
       <div class="hero-actions animate-fade-up delay-3">
         <a href="/skill.md" class="btn btn-primary">Get Started</a>
         <a href="#features" class="btn">Documentation</a>
@@ -826,13 +504,13 @@ app.get('/', (req, res) => {
       </div>
     </section>
     
-    <section class="features reveal" id="features">
+    <section class="features" id="features">
       <div class="section-label">What we handle</div>
       <div class="feature-grid">
         <div class="feature">
           <div class="feature-num">01</div>
-          <h3>Wallet Generation</h3>
-          <p>Solana keypairs created automatically. Export private keys anytime.</p>
+          <h3>Official SDKs</h3>
+          <p>Uses @pump-fun/pump-sdk and @raydium-io/raydium-sdk-v2. No third-party APIs.</p>
         </div>
         <div class="feature">
           <div class="feature-num">02</div>
@@ -851,63 +529,37 @@ app.get('/', (req, res) => {
         </div>
         <div class="feature">
           <div class="feature-num">05</div>
-          <h3>Social Verify</h3>
-          <p>Claim token ownership by connecting Twitter/X account.</p>
+          <h3>USD1 Support</h3>
+          <p>Launch on Bonk.fun with USD1 stablecoin. Auto-swap from SOL.</p>
         </div>
         <div class="feature">
           <div class="feature-num">06</div>
           <h3>Multi-platform</h3>
-          <p>Deploy to PumpFun, USD1/Bonk, or Bags.fm from one endpoint.</p>
+          <p>Deploy to PumpFun, Bags.fm, or USD1/Bonk.fun from one endpoint.</p>
         </div>
       </div>
     </section>
     
-    <section class="platforms reveal" id="platforms">
+    <section class="platforms" id="platforms">
       <div class="section-label">Supported Platforms</div>
       <div class="platform-list">
         <div class="platform">
           <div class="platform-name">PumpFun</div>
-          <div class="platform-desc">Instant memecoin launches with SOL trading pairs</div>
+          <div class="platform-desc">Official SDK - instant memecoin launches</div>
           <div class="platform-tag">Quote: SOL</div>
-        </div>
-        <div class="platform">
-          <div class="platform-name">USD1 / Bonk</div>
-          <div class="platform-desc">Stablecoin pairs via Raydium, no SOL volatility</div>
-          <div class="platform-tag">Quote: USD1</div>
         </div>
         <div class="platform">
           <div class="platform-name">Bags.fm</div>
           <div class="platform-desc">Fee sharing with collaborators, social wallet lookup</div>
           <div class="platform-tag">Quote: SOL</div>
         </div>
-      </div>
-    </section>
-    
-    <section class="code-section reveal">
-      <div class="section-label">Example</div>
-      <div class="code-block">
-        <div class="code-header">
-          <span class="code-file">launch.js</span>
-          <span class="code-lang">JavaScript</span>
-        </div>
-        <div class="code-body">
-<span class="c">// Launch a token with one request</span>
-<span class="k">const</span> response = <span class="k">await</span> fetch(<span class="s">'${baseUrl}/api/tokens/create'</span>, {
-  <span class="p">method:</span> <span class="s">'POST'</span>,
-  <span class="p">headers:</span> { <span class="s">'Content-Type'</span>: <span class="s">'application/json'</span> },
-  <span class="p">body:</span> JSON.stringify({
-    <span class="p">platform:</span> <span class="s">'pumpfun'</span>,
-    <span class="p">name:</span> <span class="s">'MyToken'</span>,
-    <span class="p">symbol:</span> <span class="s">'MTK'</span>,
-    <span class="p">image:</span> <span class="s">'https://example.com/logo.png'</span>
-  })
-});
-
-<span class="k">const</span> { tokenAddress, url } = <span class="k">await</span> response.json();
+        <div class="platform">
+          <div class="platform-name">USD1 / Bonk.fun</div>
+          <div class="platform-desc">Raydium SDK - stablecoin pairs, no SOL volatility</div>
+          <div class="platform-tag">Quote: USD1</div>
         </div>
       </div>
     </section>
-    
     
     <footer>
       <span>&copy; 2026 launchmint.fun</span>
@@ -930,37 +582,6 @@ app.get('/', (req, res) => {
         btn.style.background = '';
       }, 2000);
     }
-    
-    // Scroll reveal animation
-    const revealElements = document.querySelectorAll('.reveal');
-    
-    const revealOnScroll = () => {
-      revealElements.forEach(el => {
-        const rect = el.getBoundingClientRect();
-        const windowHeight = window.innerHeight;
-        
-        if (rect.top < windowHeight - 100) {
-          el.classList.add('visible');
-        }
-      });
-    };
-    
-    window.addEventListener('scroll', revealOnScroll);
-    revealOnScroll(); // Initial check
-    
-    // Smooth scroll for anchor links
-    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-      anchor.addEventListener('click', function (e) {
-        e.preventDefault();
-        const target = document.querySelector(this.getAttribute('href'));
-        if (target) {
-          target.scrollIntoView({
-            behavior: 'smooth',
-            block: 'start'
-          });
-        }
-      });
-    });
   </script>
 </body>
 </html>
@@ -971,8 +592,6 @@ app.get('/', (req, res) => {
 // TOKENS PAGE
 // ============================================
 app.get('/tokens', (req, res) => {
-  const baseUrl = `${req.protocol}://${req.get('host')}`;
-  
   res.send(`
 <!DOCTYPE html>
 <html lang="en">
@@ -983,429 +602,49 @@ app.get('/tokens', (req, res) => {
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <style>
     @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap');
-    
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    
     :root {
-      --bg: #0a0a0a;
-      --fg: #e8e8e8;
-      --dim: #666;
-      --accent: #ff5c00;
-      --accent-glow: rgba(255, 92, 0, 0.3);
-      --border: #222;
-      --card-bg: #111;
-      --success: #22c55e;
-      --pumpfun: #00d4aa;
-      --bonk: #f7931a;
-      --bags: #8b5cf6;
+      --bg: #0a0a0a; --fg: #e8e8e8; --dim: #666;
+      --accent: #ff5c00; --border: #222; --card-bg: #111;
+      --pumpfun: #00d4aa; --bags: #8b5cf6; --usd1: #f7931a;
     }
-    
-    html { scroll-behavior: smooth; }
-    
-    body {
-      font-family: 'IBM Plex Mono', monospace;
-      background: var(--bg);
-      color: var(--fg);
-      font-size: 14px;
-      line-height: 1.6;
-      min-height: 100vh;
-    }
-    
+    body { font-family: 'IBM Plex Mono', monospace; background: var(--bg); color: var(--fg); font-size: 14px; }
     a { color: var(--fg); text-decoration: none; }
-    
-    @keyframes fadeInUp {
-      from { opacity: 0; transform: translateY(30px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-    
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
-    }
-    
-    @keyframes shimmer {
-      0% { background-position: -200% 0; }
-      100% { background-position: 200% 0; }
-    }
-    
-    /* NAV */
-    nav {
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      z-index: 100;
-      padding: 20px 40px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      border-bottom: 1px solid var(--border);
-      background: rgba(10, 10, 10, 0.9);
-      backdrop-filter: blur(20px);
-    }
-    
-    .logo {
-      font-weight: 700;
-      font-size: 18px;
-      letter-spacing: -0.5px;
-      transition: transform 0.3s ease;
-    }
-    
-    .logo:hover { transform: scale(1.05); }
+    nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 20px 40px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); background: rgba(10,10,10,0.9); backdrop-filter: blur(20px); }
+    .logo { font-weight: 700; font-size: 18px; }
     .logo span { color: var(--accent); }
-    
-    .nav-links {
-      display: flex;
-      gap: 40px;
-      align-items: center;
-    }
-    
-    .nav-links a {
-      color: var(--dim);
-      font-size: 13px;
-      transition: all 0.3s ease;
-      position: relative;
-    }
-    
-    .nav-links a::after {
-      content: '';
-      position: absolute;
-      bottom: -4px;
-      left: 0;
-      width: 0;
-      height: 1px;
-      background: var(--accent);
-      transition: width 0.3s ease;
-    }
-    
-    .nav-links a:hover { color: var(--fg); }
-    .nav-links a:hover::after { width: 100%; }
-    .nav-links a.active { color: var(--accent); }
-    .nav-links a.active::after { width: 100%; }
-    
-    .nav-btn {
-      background: transparent;
-      color: var(--accent);
-      border: 1px solid var(--accent);
-      padding: 10px 20px;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-    
-    .nav-btn:hover {
-      background: var(--accent);
-      color: var(--bg);
-      transform: translateY(-2px);
-      box-shadow: 0 4px 20px var(--accent-glow);
-    }
-    
-    /* MAIN */
-    main {
-      max-width: 1100px;
-      margin: 0 auto;
-      padding: 140px 40px 100px;
-    }
-    
-    /* PAGE HEADER */
-    .page-header {
-      margin-bottom: 60px;
-      animation: fadeInUp 0.8s ease forwards;
-    }
-    
-    .page-header h1 {
-      font-size: 48px;
-      font-weight: 700;
-      margin-bottom: 16px;
-      letter-spacing: -2px;
-    }
-    
-    .page-header p {
-      color: var(--dim);
-      font-size: 16px;
-    }
-    
-    /* STATS */
-    .stats-grid {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 20px;
-      margin-bottom: 60px;
-      animation: fadeInUp 0.8s ease 0.1s forwards;
-      opacity: 0;
-    }
-    
-    @media (max-width: 800px) {
-      .stats-grid { grid-template-columns: repeat(2, 1fr); }
-    }
-    
-    .stat-card {
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      padding: 28px;
-      border-radius: 8px;
-      transition: all 0.4s ease;
-    }
-    
-    .stat-card:hover {
-      border-color: var(--accent);
-      transform: translateY(-4px);
-    }
-    
-    .stat-label {
-      color: var(--dim);
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 1.5px;
-      margin-bottom: 12px;
-    }
-    
-    .stat-value {
-      font-size: 32px;
-      font-weight: 700;
-      color: var(--accent);
-    }
-    
-    /* FILTER BAR */
-    .filter-bar {
-      display: flex;
-      gap: 12px;
-      margin-bottom: 32px;
-      animation: fadeInUp 0.8s ease 0.2s forwards;
-      opacity: 0;
-    }
-    
-    .filter-btn {
-      padding: 12px 20px;
-      background: transparent;
-      border: 1px solid var(--border);
-      color: var(--dim);
-      font-family: inherit;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      cursor: pointer;
-      border-radius: 4px;
-      transition: all 0.3s ease;
-    }
-    
-    .filter-btn:hover, .filter-btn.active {
-      border-color: var(--accent);
-      color: var(--accent);
-    }
-    
-    .filter-btn.active {
-      background: rgba(255, 92, 0, 0.1);
-    }
-    
-    /* TOKENS LIST */
-    .tokens-container {
-      animation: fadeInUp 0.8s ease 0.3s forwards;
-      opacity: 0;
-    }
-    
-    .tokens-header {
-      display: grid;
-      grid-template-columns: 2fr 1fr 1fr 1fr 100px;
-      gap: 20px;
-      padding: 16px 24px;
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 8px 8px 0 0;
-      color: var(--dim);
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 1.5px;
-    }
-    
-    @media (max-width: 700px) {
-      .tokens-header { display: none; }
-    }
-    
-    .tokens-list {
-      border: 1px solid var(--border);
-      border-top: none;
-      border-radius: 0 0 8px 8px;
-      overflow: hidden;
-    }
-    
-    .token-row {
-      display: grid;
-      grid-template-columns: 2fr 1fr 1fr 1fr 100px;
-      gap: 20px;
-      padding: 20px 24px;
-      border-bottom: 1px solid var(--border);
-      transition: all 0.3s ease;
-      align-items: center;
-    }
-    
-    .token-row:last-child { border-bottom: none; }
-    
-    .token-row:hover {
-      background: var(--card-bg);
-    }
-    
-    @media (max-width: 700px) {
-      .token-row {
-        grid-template-columns: 1fr;
-        gap: 12px;
-      }
-    }
-    
-    .token-info {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-    }
-    
-    .token-icon {
-      width: 44px;
-      height: 44px;
-      border-radius: 50%;
-      background: linear-gradient(135deg, var(--accent), #ff8c4c);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 700;
-      font-size: 14px;
-    }
-    
-    .token-name {
-      font-weight: 600;
-      margin-bottom: 4px;
-    }
-    
-    .token-symbol {
-      color: var(--dim);
-      font-size: 12px;
-    }
-    
-    .token-platform {
-      font-size: 12px;
-      padding: 4px 10px;
-      border-radius: 12px;
-      display: inline-block;
-    }
-    
-    .token-platform.pumpfun {
-      background: rgba(0, 212, 170, 0.15);
-      color: var(--pumpfun);
-    }
-    
-    .token-platform.bonk {
-      background: rgba(247, 147, 26, 0.15);
-      color: var(--bonk);
-    }
-    
-    .token-platform.bags {
-      background: rgba(139, 92, 246, 0.15);
-      color: var(--bags);
-    }
-    
-    .token-address {
-      font-size: 12px;
-      color: var(--dim);
-      font-family: monospace;
-    }
-    
-    .token-date {
-      color: var(--dim);
-      font-size: 13px;
-    }
-    
-    .token-link {
-      color: var(--accent);
-      font-size: 12px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      transition: all 0.3s ease;
-    }
-    
-    .token-link:hover {
-      transform: translateX(4px);
-    }
-    
-    .token-link svg {
-      width: 14px;
-      height: 14px;
-    }
-    
-    /* EMPTY STATE */
-    .empty-state {
-      text-align: center;
-      padding: 80px 40px;
-      color: var(--dim);
-    }
-    
-    .empty-icon {
-      font-size: 64px;
-      margin-bottom: 24px;
-      opacity: 0.3;
-    }
-    
-    .empty-state h3 {
-      font-size: 20px;
-      margin-bottom: 12px;
-      color: var(--fg);
-    }
-    
-    .empty-state p {
-      max-width: 400px;
-      margin: 0 auto 32px;
-    }
-    
-    .btn {
-      padding: 14px 28px;
-      font-family: inherit;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 1.5px;
-      border: 1px solid var(--accent);
-      background: var(--accent);
-      color: #fff;
-      cursor: pointer;
-      transition: all 0.3s ease;
-      text-decoration: none;
-      display: inline-block;
-      border-radius: 4px;
-    }
-    
-    .btn:hover {
-      background: #ff7a33;
-      transform: translateY(-2px);
-      box-shadow: 0 4px 20px var(--accent-glow);
-    }
-    
-    /* FOOTER */
-    footer {
-      padding: 48px 0;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      color: var(--dim);
-      font-size: 12px;
-      border-top: 1px solid var(--border);
-      margin-top: 80px;
-    }
-    
-    footer a {
-      color: var(--dim);
-      margin-left: 28px;
-      transition: all 0.3s ease;
-    }
-    
-    footer a:hover {
-      color: var(--accent);
-    }
-    
-    /* Loading shimmer */
-    .loading {
-      background: linear-gradient(90deg, var(--card-bg) 25%, var(--border) 50%, var(--card-bg) 75%);
-      background-size: 200% 100%;
-      animation: shimmer 1.5s infinite;
-    }
+    .nav-links { display: flex; gap: 40px; align-items: center; }
+    .nav-links a { color: var(--dim); font-size: 13px; }
+    .nav-links a:hover, .nav-links a.active { color: var(--accent); }
+    main { max-width: 1100px; margin: 0 auto; padding: 140px 40px 100px; }
+    .page-header { margin-bottom: 60px; }
+    .page-header h1 { font-size: 48px; font-weight: 700; margin-bottom: 16px; }
+    .page-header p { color: var(--dim); font-size: 16px; }
+    .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 60px; }
+    .stat-card { background: var(--card-bg); border: 1px solid var(--border); padding: 28px; border-radius: 8px; }
+    .stat-label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 12px; }
+    .stat-value { font-size: 32px; font-weight: 700; color: var(--accent); }
+    .filter-bar { display: flex; gap: 12px; margin-bottom: 32px; }
+    .filter-btn { padding: 12px 20px; background: transparent; border: 1px solid var(--border); color: var(--dim); font-family: inherit; font-size: 12px; text-transform: uppercase; cursor: pointer; border-radius: 4px; }
+    .filter-btn:hover, .filter-btn.active { border-color: var(--accent); color: var(--accent); }
+    .tokens-header { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 100px; gap: 20px; padding: 16px 24px; background: var(--card-bg); border: 1px solid var(--border); color: var(--dim); font-size: 11px; text-transform: uppercase; }
+    .tokens-list { border: 1px solid var(--border); border-top: none; }
+    .token-row { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 100px; gap: 20px; padding: 20px 24px; border-bottom: 1px solid var(--border); align-items: center; }
+    .token-row:hover { background: var(--card-bg); }
+    .token-info { display: flex; align-items: center; gap: 16px; }
+    .token-icon { width: 44px; height: 44px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), #ff8c4c); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; }
+    .token-platform { font-size: 12px; padding: 4px 10px; border-radius: 12px; }
+    .token-platform.pumpfun { background: rgba(0, 212, 170, 0.15); color: var(--pumpfun); }
+    .token-platform.bags { background: rgba(139, 92, 246, 0.15); color: var(--bags); }
+    .token-platform.usd1 { background: rgba(247, 147, 26, 0.15); color: var(--usd1); }
+    .token-address { font-size: 12px; color: var(--dim); }
+    .token-date { color: var(--dim); font-size: 13px; }
+    .token-link { color: var(--accent); font-size: 12px; }
+    .empty-state { text-align: center; padding: 80px 40px; color: var(--dim); }
+    .empty-state h3 { font-size: 20px; margin-bottom: 12px; color: var(--fg); }
+    .btn { padding: 14px 28px; background: var(--accent); border: none; color: #fff; cursor: pointer; font-family: inherit; text-decoration: none; display: inline-block; margin-top: 20px; }
+    footer { padding: 48px 0; display: flex; justify-content: space-between; color: var(--dim); font-size: 12px; border-top: 1px solid var(--border); margin-top: 80px; }
+    footer a { color: var(--dim); margin-left: 28px; }
   </style>
 </head>
 <body>
@@ -1415,155 +654,78 @@ app.get('/tokens', (req, res) => {
       <a href="/#features">Features</a>
       <a href="/#platforms">Platforms</a>
       <a href="/tokens" class="active">Tokens</a>
-      <a href="/skill.md" class="nav-btn">Get Skill</a>
     </div>
   </nav>
-  
   <main>
     <div class="page-header">
       <h1>Launched Tokens</h1>
       <p>All tokens deployed through LaunchMint API</p>
     </div>
-    
     <div class="stats-grid">
-      <div class="stat-card">
-        <div class="stat-label">Total Tokens</div>
-        <div class="stat-value" id="totalTokens">-</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">PumpFun</div>
-        <div class="stat-value" id="pumpfunCount">-</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">USD1/Bonk</div>
-        <div class="stat-value" id="bonkCount">-</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Bags.fm</div>
-        <div class="stat-value" id="bagsCount">-</div>
-      </div>
+      <div class="stat-card"><div class="stat-label">Total Tokens</div><div class="stat-value" id="totalTokens">-</div></div>
+      <div class="stat-card"><div class="stat-label">PumpFun</div><div class="stat-value" id="pumpfunCount">-</div></div>
+      <div class="stat-card"><div class="stat-label">Bags.fm</div><div class="stat-value" id="bagsCount">-</div></div>
     </div>
-    
     <div class="filter-bar">
       <button class="filter-btn active" data-filter="all">All</button>
       <button class="filter-btn" data-filter="pumpfun">PumpFun</button>
-      <button class="filter-btn" data-filter="bonk">USD1/Bonk</button>
       <button class="filter-btn" data-filter="bags">Bags.fm</button>
+      <button class="filter-btn" data-filter="usd1">USD1</button>
     </div>
-    
-    <div class="tokens-container">
-      <div class="tokens-header">
-        <span>Token</span>
-        <span>Platform</span>
-        <span>Address</span>
-        <span>Launched</span>
-        <span>Link</span>
-      </div>
-      <div class="tokens-list" id="tokensList">
-        <div class="empty-state">
-          <div class="empty-icon"></div>
-          <h3>No tokens launched yet</h3>
-          <p>Be the first to launch a token through LaunchMint API. Get started with our AI agent skill.</p>
-          <a href="/skill.md" class="btn">Get Skill</a>
-        </div>
+    <div class="tokens-header"><span>Token</span><span>Platform</span><span>Address</span><span>Launched</span><span>Link</span></div>
+    <div class="tokens-list" id="tokensList">
+      <div class="empty-state">
+        <h3>No tokens launched yet</h3>
+        <p>Be the first to launch a token through LaunchMint API.</p>
+        <a href="/skill.md" class="btn">Get Skill</a>
       </div>
     </div>
-    
     <footer>
       <span>&copy; 2026 launchmint.fun</span>
-      <div>
-        <a href="/skill.md">Docs</a>
-        <a href="/health">Status</a>
-        <a href="/tokens">Tokens</a>
-      </div>
+      <div><a href="/skill.md">Docs</a><a href="/health">Status</a></div>
     </footer>
   </main>
-  
   <script>
     let allTokens = [];
-    let currentFilter = 'all';
-    
     async function loadTokens() {
-      try {
-        const response = await fetch('/api/tokens');
-        const data = await response.json();
-        
-        if (data.success) {
-          allTokens = data.tokens;
-          updateStats(allTokens);
-          renderTokens(allTokens);
-        }
-      } catch (error) {
-        console.error('Failed to load tokens:', error);
+      const res = await fetch('/api/tokens');
+      const data = await res.json();
+      if (data.success) {
+        allTokens = data.tokens;
+        document.getElementById('totalTokens').textContent = allTokens.length;
+        document.getElementById('pumpfunCount').textContent = allTokens.filter(t => t.platform === 'pumpfun').length;
+        document.getElementById('bagsCount').textContent = allTokens.filter(t => t.platform === 'bags').length;
+        renderTokens(allTokens);
       }
     }
-    
-    function updateStats(tokens) {
-      document.getElementById('totalTokens').textContent = tokens.length;
-      document.getElementById('pumpfunCount').textContent = tokens.filter(t => t.platform === 'pumpfun').length;
-      document.getElementById('bonkCount').textContent = tokens.filter(t => t.platform === 'bonk').length;
-      document.getElementById('bagsCount').textContent = tokens.filter(t => t.platform === 'bags').length;
-    }
-    
     function renderTokens(tokens) {
       const container = document.getElementById('tokensList');
-      
-      if (tokens.length === 0) {
-        container.innerHTML = \`
-          <div class="empty-state">
-            <div class="empty-icon"></div>
-            <h3>No tokens launched yet</h3>
-            <p>Be the first to launch a token through LaunchMint API. Get started with our AI agent skill.</p>
-            <a href="/skill.md" class="btn">Get Skill</a>
-          </div>
-        \`;
+      if (!tokens.length) {
+        container.innerHTML = '<div class="empty-state"><h3>No tokens</h3></div>';
         return;
       }
-      
-      container.innerHTML = tokens.map(token => \`
-        <div class="token-row" data-platform="\${token.platform}">
+      container.innerHTML = tokens.map(t => \`
+        <div class="token-row">
           <div class="token-info">
-            <div class="token-icon">\${token.symbol.substring(0, 2).toUpperCase()}</div>
-            <div>
-              <div class="token-name">\${token.name}</div>
-              <div class="token-symbol">\${token.symbol}</div>
-            </div>
+            <div class="token-icon">\${t.symbol.substring(0,2)}</div>
+            <div><div>\${t.name}</div><div style="color:var(--dim);font-size:12px">\${t.symbol}</div></div>
           </div>
-          <div>
-            <span class="token-platform \${token.platform}">\${token.platform}</span>
-          </div>
-          <div class="token-address">\${token.tokenAddress ? token.tokenAddress.substring(0, 8) + '...' : '-'}</div>
-          <div class="token-date">\${token.launchedAt ? new Date(token.launchedAt).toLocaleDateString() : '-'}</div>
-          <a href="\${token.url}" target="_blank" class="token-link">
-            View
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-            </svg>
-          </a>
+          <span class="token-platform \${t.platform}">\${t.platform}</span>
+          <span class="token-address">\${t.tokenAddress?.substring(0,8)}...</span>
+          <span class="token-date">\${new Date(t.launchedAt).toLocaleDateString()}</span>
+          <a href="\${t.url}" target="_blank" class="token-link">View</a>
         </div>
       \`).join('');
     }
-    
-    // Filter buttons
     document.querySelectorAll('.filter-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.onclick = () => {
         document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
-        
-        currentFilter = btn.dataset.filter;
-        const filtered = currentFilter === 'all' 
-          ? allTokens 
-          : allTokens.filter(t => t.platform === currentFilter);
-        
-        renderTokens(filtered);
-      });
+        const filter = btn.dataset.filter;
+        renderTokens(filter === 'all' ? allTokens : allTokens.filter(t => t.platform === filter));
+      };
     });
-    
-    // Load tokens on page load
     loadTokens();
-    
-    // Refresh every 30 seconds
-    setInterval(loadTokens, 30000);
   </script>
 </body>
 </html>
@@ -1578,12 +740,12 @@ app.get('/skill.md', (req, res) => {
   
   res.type('text/markdown').send(`---
 name: launchmint
-description: Launch tokens on Solana via LaunchMint API. Supports PumpFun, Bonk/USD1, and Bags.fm. Use when creating tokens, launching memecoins, or deploying tokens programmatically.
+description: Launch tokens on Solana via LaunchMint API. Supports PumpFun (official SDK), Bags.fm, and USD1/Bonk.fun (Raydium SDK).
 ---
 
-# LaunchMint 🚀
+# LaunchMint
 
-Launch tokens on Solana. Works with PumpFun, USD1/Bonk, and Bags.fm.
+Launch tokens on Solana. Works with PumpFun, Bags.fm, and USD1/Bonk.fun.
 
 **Base URL:** \`${baseUrl}\`
 
@@ -1591,11 +753,11 @@ Launch tokens on Solana. Works with PumpFun, USD1/Bonk, and Bags.fm.
 
 ## Supported Platforms
 
-| Platform | API Key Required | Quote | Best For |
-|----------|------------------|-------|----------|
-| \`pumpfun\` | No (uses official SDK) | SOL | Quick memecoin launches |
-| \`bonk\` | Yes (PumpPortal) | USD1 | Stable pricing |
-| \`bags\` | Yes (Bags.fm) | SOL | Fee sharing with collaborators |
+| Platform | SDK/API | Quote | API Key Required |
+|----------|---------|-------|------------------|
+| \`pumpfun\` | @pump-fun/pump-sdk | SOL | No |
+| \`bags\` | Bags.fm API | SOL | Yes (from dev.bags.fm) |
+| \`usd1\` | @raydium-io/raydium-sdk-v2 | USD1 | No |
 
 ---
 
@@ -1605,31 +767,20 @@ Launch tokens on Solana. Works with PumpFun, USD1/Bonk, and Bags.fm.
 **No API key required!** Uses the official @pump-fun/pump-sdk.
 Just provide your wallet's private key.
 
----
+### Bags.fm
 
-### Bonk/USD1 (PumpPortal API Key)
-
-1. Go to **https://pumpportal.fun/trading-api/setup/**
-2. Connect your Solana wallet
-3. Click "Generate API Key"
-4. Copy and save your API key securely
-5. Use this key in the \`apiKey\` field when launching on \`bonk\` platform
-
----
-
-### Bags.fm API Key
-
+**Get your API key:**
 1. Go to **https://dev.bags.fm**
 2. Sign in with your wallet (Phantom, Backpack, etc.)
 3. Click "Create API Key"
-4. Give your key a name (e.g., "My Agent")
-5. Copy and save your API key securely (you can create up to 10 keys)
-6. Use this key in the \`apiKey\` field when launching on \`bags\` platform
+4. Give your key a name
+5. Copy and save your API key (max 10 keys per account)
 
-**Important:** Each user needs their own Bags API key. This ensures:
-- Fee sharing works correctly with your wallet
-- Your launches are tracked to your account
-- You can manage and revoke keys anytime
+**Important:** Each user needs their own Bags API key for fee sharing to work correctly.
+
+### USD1/Bonk.fun
+**No API key required!** Uses the official Raydium SDK directly.
+Auto-swaps SOL to USD1 via Jupiter if needed.
 
 ---
 
@@ -1662,18 +813,18 @@ Content-Type: application/json
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| \`platform\` | Yes | \`pumpfun\`, \`bonk\`, or \`bags\` |
+| \`platform\` | Yes | \`pumpfun\`, \`bags\`, or \`usd1\` |
 | \`name\` | Yes | Token name (max 32 chars) |
 | \`symbol\` | Yes | Token symbol (max 10 chars) |
 | \`description\` | No | Token description |
 | \`image\` | Yes | URL to token image (PNG/JPG) |
 | \`creatorWallet\` | Yes | Solana wallet to receive fees |
-| \`apiKey\` | Depends | Required for \`bonk\` (PumpPortal) and \`bags\` (Bags.fm). Not needed for \`pumpfun\`. |
-| \`privateKey\` | Yes | Base58 private key for signing transactions |
+| \`privateKey\` | Yes | Base58 private key for signing |
+| \`apiKey\` | Bags only | Required for \`bags\` platform |
 | \`twitter\` | No | Twitter URL |
 | \`telegram\` | No | Telegram URL |
 | \`website\` | No | Website URL |
-| \`initialBuyAmount\` | No | Initial dev buy in SOL (default: 0) |
+| \`initialBuyAmount\` | No | Initial buy amount (SOL for pumpfun/bags, USD1 for usd1) |
 | \`feeClaimers\` | No | Bags.fm only - array of fee share recipients |
 
 ### Response
@@ -1690,9 +841,9 @@ Content-Type: application/json
 
 ---
 
-## Platform-Specific Examples
+## Platform Examples
 
-### PumpFun Launch (No API Key Needed!)
+### PumpFun (Official SDK)
 
 \`\`\`javascript
 const response = await fetch('${baseUrl}/api/tokens/create', {
@@ -1705,33 +856,13 @@ const response = await fetch('${baseUrl}/api/tokens/create', {
     description: 'The best memecoin ever',
     image: 'https://example.com/meme.png',
     creatorWallet: 'YourWallet...',
-    privateKey: 'your-base58-private-key',  // Required for signing
-    initialBuyAmount: 0.5  // Dev buy 0.5 SOL
-  })
-});
-\`\`\`
-
-### USD1/Bonk Launch (Requires PumpPortal API Key)
-
-\`\`\`javascript
-const response = await fetch('${baseUrl}/api/tokens/create', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    platform: 'bonk',
-    name: 'StableToken',
-    symbol: 'STABLE',
-    description: 'USD1 paired token',
-    image: 'https://example.com/stable.png',
-    creatorWallet: 'YourWallet...',
-    apiKey: 'your-pumpportal-api-key',  // Get from pumpportal.fun
     privateKey: 'your-base58-private-key',
-    initialBuyAmount: 1  // Dev buy 1 SOL worth
+    initialBuyAmount: 0.5  // SOL
   })
 });
 \`\`\`
 
-### Bags.fm Launch (Requires Your Own Bags API Key)
+### Bags.fm (Fee Sharing)
 
 \`\`\`javascript
 const response = await fetch('${baseUrl}/api/tokens/create', {
@@ -1752,6 +883,25 @@ const response = await fetch('${baseUrl}/api/tokens/create', {
       { provider: 'twitter', username: 'collaborator2', bps: 2000 }
       // Creator gets remaining 50% (5000 bps)
     ]
+  })
+});
+\`\`\`
+
+### USD1/Bonk.fun (Raydium SDK)
+
+\`\`\`javascript
+const response = await fetch('${baseUrl}/api/tokens/create', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    platform: 'usd1',
+    name: 'StableToken',
+    symbol: 'STABLE',
+    description: 'USD1 paired token on Bonk.fun',
+    image: 'https://example.com/stable.png',
+    creatorWallet: 'YourWallet...',
+    privateKey: 'your-base58-private-key',
+    initialBuyAmount: 1  // USD1 (auto-swaps from SOL if needed)
   })
 });
 \`\`\`
@@ -1788,54 +938,9 @@ GET ${baseUrl}/api/wallet/lookup?username=twitterhandle&provider=twitter
 
 Common errors:
 - \`platform required\` - Missing platform field
-- \`apiKey required\` - Missing API key for platform
+- \`Bags API key required\` - Missing apiKey for bags platform
+- \`privateKey required\` - Missing private key
 - \`name and symbol required\` - Missing token details
-- \`image required\` - Missing image URL
-
----
-
-## cURL Example (PumpFun - No API Key)
-
-\`\`\`bash
-curl -X POST ${baseUrl}/api/tokens/create \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "platform": "pumpfun",
-    "name": "TestToken",
-    "symbol": "TEST",
-    "description": "A test token",
-    "image": "https://example.com/test.png",
-    "creatorWallet": "YourWallet...",
-    "privateKey": "your-base58-private-key"
-  }'
-\`\`\`
-
----
-
-## Python Example (Bags.fm)
-
-\`\`\`python
-import requests
-
-response = requests.post('${baseUrl}/api/tokens/create', json={
-    'platform': 'bags',
-    'name': 'PythonToken',
-    'symbol': 'PYTH',
-    'description': 'Launched from Python on Bags.fm',
-    'image': 'https://example.com/python.png',
-    'creatorWallet': 'YourWallet...',
-    'apiKey': 'your-bags-api-key',  # Get from dev.bags.fm
-    'privateKey': 'your-base58-private-key',
-    'initialBuyAmount': 0.01
-})
-
-data = response.json()
-if data['success']:
-    print(f"Token: {data['tokenAddress']}")
-    print(f"URL: {data['url']}")
-else:
-    print(f"Error: {data['error']}")
-\`\`\`
 `);
 });
 
@@ -1862,7 +967,7 @@ app.post('/api/tokens/create', async (req, res) => {
 
     // Validate required fields
     if (!platform) {
-      return res.status(400).json({ success: false, error: 'platform required (pumpfun, bonk, or bags)' });
+      return res.status(400).json({ success: false, error: 'platform required (pumpfun, bags, or usd1)' });
     }
     if (!name || !symbol) {
       return res.status(400).json({ success: false, error: 'name and symbol required' });
@@ -1870,55 +975,44 @@ app.post('/api/tokens/create', async (req, res) => {
     if (!image) {
       return res.status(400).json({ success: false, error: 'image URL required' });
     }
+    if (!privateKey) {
+      return res.status(400).json({ success: false, error: 'privateKey required' });
+    }
 
     // Normalize platform
     const normalizedPlatform = platform.toLowerCase() === 'pump' ? 'pumpfun' : 
-                               platform.toLowerCase() === 'usd1' ? 'bonk' : 
+                               platform.toLowerCase() === 'bonk' ? 'usd1' :
                                platform.toLowerCase();
 
-    const validPlatforms = ['pumpfun', 'bonk', 'bags'];
+    const validPlatforms = ['pumpfun', 'bags', 'usd1'];
     if (!validPlatforms.includes(normalizedPlatform)) {
-      return res.status(400).json({ success: false, error: 'Invalid platform. Use: pumpfun, bonk, or bags' });
+      return res.status(400).json({ success: false, error: 'Invalid platform. Use: pumpfun, bags, or usd1' });
     }
 
-    // Validate API key requirements
-    // PumpFun: No API key needed (uses official Pump SDK)
-    // Bonk/USD1: Requires PumpPortal API key
-    // Bags: Requires user's own Bags API key
-    
+    // Validate API key for bags
     if (normalizedPlatform === 'bags' && !apiKey) {
       return res.status(400).json({ 
         success: false, 
         error: 'Bags API key required. Get yours at https://dev.bags.fm' 
       });
     }
-    
-    if (normalizedPlatform === 'bonk' && !apiKey) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'PumpPortal API key required for Bonk/USD1. Get yours at https://pumpportal.fun/trading-api/setup/' 
-      });
-    }
 
     let result;
 
     if (normalizedPlatform === 'pumpfun') {
-      // PumpFun uses official Pump SDK - no API key needed
       result = await launchOnPumpFun({
         name, symbol, description, image, twitter, telegram, website,
         creatorWallet, privateKey, initialBuyAmount
       });
-    } else if (normalizedPlatform === 'bonk') {
-      // Bonk/USD1 uses PumpPortal API
-      result = await launchOnBonk({
-        name, symbol, description, image, twitter, telegram, website,
-        creatorWallet, apiKey, privateKey, initialBuyAmount
-      });
     } else if (normalizedPlatform === 'bags') {
-      // Bags uses user's own Bags API key
       result = await launchOnBags({
         name, symbol, description, image, twitter, telegram, website,
         creatorWallet, apiKey, privateKey, initialBuyAmount, feeClaimers
+      });
+    } else if (normalizedPlatform === 'usd1') {
+      result = await launchOnUSD1({
+        name, symbol, description, image, twitter, telegram, website,
+        creatorWallet, privateKey, initialBuyAmount
       });
     }
 
@@ -1976,7 +1070,7 @@ app.get('/api/wallet/lookup', async (req, res) => {
 
     const response = await httpsRequest(
       'public-api-v2.bags.fm',
-      `/api/v1/state/launch-wallet-v2?username=${encodeURIComponent(username)}&provider=${provider}`,
+      `/api/v1/token-launch/fee-share/wallet/v2?username=${encodeURIComponent(username)}&provider=${provider}`,
       'GET'
     );
 
@@ -2001,9 +1095,14 @@ app.get('/api/wallet/lookup', async (req, res) => {
 app.get('/health', (req, res) => {
   res.json({
     name: 'LaunchMint',
-    version: '1.0.0',
+    version: '2.0.0',
     status: 'ok',
-    platforms: ['pumpfun', 'bonk', 'bags'],
+    platforms: ['pumpfun', 'bags', 'usd1'],
+    sdks: {
+      pumpfun: '@pump-fun/pump-sdk',
+      bags: 'Bags.fm API',
+      usd1: '@raydium-io/raydium-sdk-v2'
+    },
     tokensLaunched: launchedTokens.length
   });
 });
@@ -2012,34 +1111,30 @@ app.get('/health', (req, res) => {
 // PLATFORM LAUNCHERS
 // ============================================
 
+// PUMPFUN - Official SDK
 async function launchOnPumpFun({ name, symbol, description, image, twitter, telegram, website, creatorWallet, privateKey, initialBuyAmount }) {
   try {
-    if (!privateKey) {
-      return { success: false, error: 'privateKey required for PumpFun launch' };
-    }
-
     const keypair = Keypair.fromSecretKey(bs58.decode(privateKey));
     const mintKeypair = Keypair.generate();
     
     // Upload to IPFS
-    console.log('Uploading to IPFS...');
+    console.log('[PumpFun] Uploading to IPFS...');
     const ipfsResult = await uploadToPumpIPFS(image, name, symbol, description, twitter, telegram, website);
     
     if (!ipfsResult.metadataUri) {
       return { success: false, error: 'Failed to upload metadata to IPFS' };
     }
     
-    console.log('IPFS URI:', ipfsResult.metadataUri);
+    console.log('[PumpFun] IPFS URI:', ipfsResult.metadataUri);
 
-    // Fetch global state from Pump SDK
+    // Fetch global state
     const global = await pumpSdk.fetchGlobal();
     
     let instructions;
     const solAmount = new BN(Math.floor((initialBuyAmount || 0) * LAMPORTS_PER_SOL));
     
     if (initialBuyAmount && initialBuyAmount > 0) {
-      // Create token with initial buy using official Pump SDK
-      console.log('Creating token with initial buy via Pump SDK...');
+      console.log('[PumpFun] Creating token with initial buy...');
       instructions = await pumpSdk.createAndBuyInstructions({
         global,
         mint: mintKeypair.publicKey,
@@ -2052,8 +1147,7 @@ async function launchOnPumpFun({ name, symbol, description, image, twitter, tele
         amount: getBuyTokenAmountFromSolAmount(global, null, solAmount),
       });
     } else {
-      // Create token without initial buy
-      console.log('Creating token via Pump SDK...');
+      console.log('[PumpFun] Creating token...');
       const instruction = await pumpSdk.createInstruction({
         mint: mintKeypair.publicKey,
         name,
@@ -2083,13 +1177,9 @@ async function launchOnPumpFun({ name, symbol, description, image, twitter, tele
       preflightCommitment: 'confirmed'
     });
     
-    await connection.confirmTransaction({
-      signature,
-      blockhash,
-      lastValidBlockHeight
-    }, 'confirmed');
+    await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'confirmed');
 
-    console.log('Token created successfully:', mintKeypair.publicKey.toBase58());
+    console.log('[PumpFun] Token created:', mintKeypair.publicKey.toBase58());
 
     return {
       success: true,
@@ -2098,69 +1188,18 @@ async function launchOnPumpFun({ name, symbol, description, image, twitter, tele
       url: `https://pump.fun/${mintKeypair.publicKey.toBase58()}`
     };
   } catch (error) {
-    console.error('PumpFun launch error:', error);
+    console.error('[PumpFun] Error:', error);
     return { success: false, error: error.message };
   }
 }
 
-async function launchOnBonk({ name, symbol, description, image, twitter, telegram, website, creatorWallet, apiKey, privateKey, initialBuyAmount }) {
-  try {
-    // Generate mint keypair
-    const mintKeypair = Keypair.generate();
-    
-    // Upload to Bonk IPFS
-    console.log('Uploading to Bonk IPFS...');
-    const metadataUri = await uploadToBonkIPFS(image, name, symbol, description, website);
-    
-    console.log('Metadata URI:', metadataUri);
-
-    // Create token via PumpPortal Lightning API with Bonk pool
-    const tradeResponse = await httpsRequest(
-      'pumpportal.fun',
-      `/api/trade?api-key=${apiKey}`,
-      'POST',
-      {
-        action: 'create',
-        tokenMetadata: {
-          name,
-          symbol,
-          uri: metadataUri
-        },
-        mint: bs58.encode(mintKeypair.secretKey),
-        denominatedInSol: 'true',
-        amount: initialBuyAmount || 0,
-        slippage: 10,
-        priorityFee: 0.0005,
-        pool: 'bonk',
-        quoteMint: 'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB'
-      }
-    );
-
-    if (tradeResponse.status === 200 && tradeResponse.data.signature) {
-      return {
-        success: true,
-        tokenAddress: mintKeypair.publicKey.toBase58(),
-        txHash: tradeResponse.data.signature,
-        url: `https://bonk.fun/${mintKeypair.publicKey.toBase58()}`
-      };
-    } else {
-      return { success: false, error: tradeResponse.data.message || 'PumpPortal API error' };
-    }
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-}
-
+// BAGS.FM - Official API
 async function launchOnBags({ name, symbol, description, image, twitter, telegram, website, creatorWallet, apiKey, privateKey, initialBuyAmount, feeClaimers }) {
   try {
-    if (!privateKey) {
-      return { success: false, error: 'privateKey required for Bags.fm launch' };
-    }
-
     const keypair = Keypair.fromSecretKey(bs58.decode(privateKey));
     
     // Step 1: Create token info and metadata
-    console.log('Creating Bags.fm token metadata...');
+    console.log('[Bags] Creating token metadata...');
     const metadataResponse = await httpsRequest(
       'public-api-v2.bags.fm',
       '/api/v1/token-launch/create-token-info',
@@ -2184,7 +1223,7 @@ async function launchOnBags({ name, symbol, description, image, twitter, telegra
     const tokenMint = metadataResponse.data.response.tokenMint;
     const tokenMetadata = metadataResponse.data.response.tokenMetadata;
     
-    console.log('Token mint:', tokenMint);
+    console.log('[Bags] Token mint:', tokenMint);
 
     // Step 2: Build fee claimers array
     let feeClaimersArray = [];
@@ -2197,6 +1236,7 @@ async function launchOnBags({ name, symbol, description, image, twitter, telegra
         return { success: false, error: 'Total fee claimer BPS cannot exceed 10000' };
       }
       
+      // Creator must always be explicit
       if (creatorBps > 0) {
         feeClaimersArray.push({
           user: keypair.publicKey.toBase58(),
@@ -2208,7 +1248,7 @@ async function launchOnBags({ name, symbol, description, image, twitter, telegra
       for (const fc of feeClaimers) {
         const walletResponse = await httpsRequest(
           'public-api-v2.bags.fm',
-          `/api/v1/state/launch-wallet-v2?username=${encodeURIComponent(fc.username)}&provider=${fc.provider}`,
+          `/api/v1/token-launch/fee-share/wallet/v2?username=${encodeURIComponent(fc.username)}&provider=${fc.provider}`,
           'GET',
           null,
           { 'x-api-key': apiKey }
@@ -2222,7 +1262,7 @@ async function launchOnBags({ name, symbol, description, image, twitter, telegra
         }
       }
     } else {
-      // Creator gets all fees
+      // Creator gets all fees (must be explicit with 10000 bps)
       feeClaimersArray = [{
         user: keypair.publicKey.toBase58(),
         userBps: 10000
@@ -2230,10 +1270,10 @@ async function launchOnBags({ name, symbol, description, image, twitter, telegra
     }
 
     // Step 3: Create fee share config
-    console.log('Creating fee share config...');
+    console.log('[Bags] Creating fee share config...');
     const configResponse = await httpsRequest(
       'public-api-v2.bags.fm',
-      '/api/v1/config/create-bags-fee-share-config',
+      '/api/v1/fee-share/config',
       'POST',
       {
         payer: keypair.publicKey.toBase58(),
@@ -2252,16 +1292,15 @@ async function launchOnBags({ name, symbol, description, image, twitter, telegra
     for (const txBase58 of configTxs) {
       const tx = VersionedTransaction.deserialize(bs58.decode(txBase58));
       tx.sign([keypair]);
-      
       const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
       await connection.confirmTransaction(sig, 'confirmed');
     }
 
     const configKey = configResponse.data.response.meteoraConfigKey;
-    console.log('Config key:', configKey);
+    console.log('[Bags] Config key:', configKey);
 
     // Step 4: Create launch transaction
-    console.log('Creating launch transaction...');
+    console.log('[Bags] Creating launch transaction...');
     const launchResponse = await httpsRequest(
       'public-api-v2.bags.fm',
       '/api/v1/token-launch/create-launch-transaction',
@@ -2287,6 +1326,8 @@ async function launchOnBags({ name, symbol, description, image, twitter, telegra
     const signature = await connection.sendRawTransaction(launchTx.serialize(), { skipPreflight: true });
     await connection.confirmTransaction(signature, 'confirmed');
 
+    console.log('[Bags] Token launched:', tokenMint);
+
     return {
       success: true,
       tokenAddress: tokenMint,
@@ -2295,7 +1336,129 @@ async function launchOnBags({ name, symbol, description, image, twitter, telegra
     };
 
   } catch (error) {
-    console.error('Bags launch error:', error);
+    console.error('[Bags] Error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+// USD1/BONK.FUN - Raydium SDK
+async function launchOnUSD1({ name, symbol, description, image, twitter, telegram, website, creatorWallet, privateKey, initialBuyAmount }) {
+  try {
+    const keypair = Keypair.fromSecretKey(bs58.decode(privateKey));
+    const mintKeypair = Keypair.generate();
+    
+    // Step 1: Upload to IPFS
+    console.log('[USD1] Uploading to IPFS...');
+    const ipfsResult = await uploadToPumpIPFS(image, name, symbol, description, twitter, telegram, website);
+    
+    if (!ipfsResult.metadataUri) {
+      return { success: false, error: 'Failed to upload metadata to IPFS' };
+    }
+    
+    console.log('[USD1] IPFS URI:', ipfsResult.metadataUri);
+
+    // Step 2: Initialize Raydium SDK
+    console.log('[USD1] Initializing Raydium SDK...');
+    const raydium = await Raydium.load({
+      connection,
+      owner: keypair,
+      disableLoadToken: false,
+    });
+
+    // Step 3: Fetch USD1 config
+    console.log('[USD1] Fetching USD1 config...');
+    const configData = await connection.getAccountInfo(USD1_CONFIG);
+    if (!configData) {
+      return { success: false, error: 'USD1 config not found on chain' };
+    }
+    
+    const configInfo = LaunchpadConfig.decode(configData.data);
+    const mintBInfo = await raydium.token.getTokenInfo(USD1_MINT);
+    const mintBDecimals = mintBInfo?.decimals || 6;
+
+    // Step 4: Check/Swap USD1 balance
+    let usd1Balance = await getUsd1Balance(keypair.publicKey);
+    console.log(`[USD1] Current USD1 balance: ${usd1Balance}`);
+
+    let buyAmount = new BN(0);
+    let createOnly = true;
+
+    if (initialBuyAmount && initialBuyAmount > 0) {
+      if (usd1Balance < initialBuyAmount) {
+        const missing = initialBuyAmount - usd1Balance + 0.1; // +0.1 buffer
+        console.log(`[USD1] Swapping SOL → ${missing} USD1...`);
+        await swapSolToUsd1(keypair, missing);
+        usd1Balance = await getUsd1Balance(keypair.publicKey);
+      }
+
+      if (usd1Balance >= initialBuyAmount) {
+        buyAmount = new BN(Math.round(initialBuyAmount * 1_000_000));
+        createOnly = false;
+      }
+    }
+
+    // Step 5: Create launchpad token
+    console.log('[USD1] Creating launchpad token...');
+    console.log(`[USD1] createOnly: ${createOnly}, buyAmount: ${buyAmount.toString()}`);
+
+    const { transactions, extInfo } = await raydium.launchpad.createLaunchpad({
+      programId: LAUNCHPAD_PROGRAM,
+      mintA: mintKeypair.publicKey,
+      decimals: 6,
+      name,
+      symbol,
+      uri: ipfsResult.metadataUri,
+      migrateType: 'amm',
+      configId: USD1_CONFIG,
+      configInfo,
+      mintBDecimals,
+      slippage: new BN(10),
+      platformId: BONK_PLATFORM_ID,
+      txVersion: TxVersion.LEGACY,
+      buyAmount,
+      feePayer: keypair.publicKey,
+      createOnly,
+      extraSigners: [mintKeypair],
+      computeBudgetConfig: { units: 600_000, microLamports: 50_000 },
+    });
+
+    // Step 6: Send transactions
+    console.log(`[USD1] Sending ${transactions.length} transaction(s)...`);
+    
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+    
+    let signature = '';
+    for (let i = 0; i < transactions.length; i++) {
+      const tx = transactions[i];
+      
+      const messageV0 = new TransactionMessage({
+        payerKey: keypair.publicKey,
+        recentBlockhash: blockhash,
+        instructions: tx.instructions,
+      }).compileToV0Message();
+      
+      const vtx = new VersionedTransaction(messageV0);
+      vtx.sign([keypair, mintKeypair]);
+      
+      signature = await connection.sendTransaction(vtx, { maxRetries: 3 });
+      console.log(`[USD1] Tx ${i + 1}: ${signature}`);
+      
+      await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'confirmed');
+    }
+
+    const poolAddress = extInfo?.address?.poolId?.toBase58();
+    console.log('[USD1] Token launched:', mintKeypair.publicKey.toBase58());
+
+    return {
+      success: true,
+      tokenAddress: mintKeypair.publicKey.toBase58(),
+      txHash: signature,
+      poolAddress,
+      url: `https://bonk.fun/${mintKeypair.publicKey.toBase58()}`
+    };
+
+  } catch (error) {
+    console.error('[USD1] Error:', error);
     return { success: false, error: error.message };
   }
 }
@@ -2307,7 +1470,7 @@ app.listen(PORT, () => {
   console.log(`
 ╔════════════════════════════════════════════════════════════════╗
 ║                                                                ║
-║     🚀  L A U N C H M I N T  🚀                                ║
+║     🚀  L A U N C H M I N T  v2.0  🚀                          ║
 ║     Token Launch API for AI Agents                             ║
 ║                                                                ║
 ╠════════════════════════════════════════════════════════════════╣
@@ -2317,7 +1480,10 @@ app.listen(PORT, () => {
 ║                                                                ║
 ╠════════════════════════════════════════════════════════════════╣
 ║                                                                ║
-║  Platforms:  PumpFun  |  Bonk/USD1  |  Bags.fm                 ║
+║  Platforms:                                                    ║
+║    • PumpFun   → @pump-fun/pump-sdk (official)                 ║
+║    • Bags.fm   → Bags API (dev.bags.fm)                        ║
+║    • USD1      → @raydium-io/raydium-sdk-v2                    ║
 ║                                                                ║
 ╠════════════════════════════════════════════════════════════════╣
 ║                                                                ║
