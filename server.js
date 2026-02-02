@@ -947,6 +947,36 @@ Common errors:
 // ============================================
 // CREATE TOKEN
 // ============================================
+
+// GET handler - show usage info
+app.get('/api/tokens/create', (req, res) => {
+  const baseUrl = `${req.protocol}://${req.get('host')}`;
+  res.json({
+    error: 'Use POST to create tokens',
+    method: 'POST',
+    endpoint: `${baseUrl}/api/tokens/create`,
+    contentType: 'application/json',
+    requiredFields: ['platform', 'name', 'symbol', 'image', 'privateKey'],
+    platforms: {
+      pumpfun: { apiKey: false, quote: 'SOL', sdk: '@pump-fun/pump-sdk' },
+      bags: { apiKey: true, quote: 'SOL', sdk: 'Bags.fm API' },
+      usd1: { apiKey: false, quote: 'USD1', sdk: '@raydium-io/raydium-sdk-v2' }
+    },
+    example: {
+      platform: 'pumpfun',
+      name: 'MyToken',
+      symbol: 'MTK',
+      description: 'My awesome token',
+      image: 'https://example.com/token.png',
+      creatorWallet: 'YourSolanaWallet...',
+      privateKey: 'your-base58-private-key',
+      initialBuyAmount: 0.1
+    },
+    docs: `${baseUrl}/skill.md`
+  });
+});
+
+// POST handler - create token
 app.post('/api/tokens/create', async (req, res) => {
   try {
     const { 
